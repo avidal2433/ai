@@ -1,0 +1,13 @@
+{
+  "name": "bitbucket-code-review",
+  "version": "4.1.2",
+  "description": "Technical review of Bitbucket pull requests with repository and ClickUp context; publishes verified findings as PR comments.",
+  "author": {
+    "name": "Andrés Vidal",
+    "url": "https://github.com/avidal2433"
+  },
+  "homepage": "https://github.com/avidal2433/ai/tree/main/plugins/bitbucket-code-review",
+  "repository": "https://github.com/avidal2433/ai",
+  "license": "MIT",
+  "keywords": ["bitbucket", "code-review", "pull-request", "clickup"]
+}

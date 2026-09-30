@@ -1,0 +1,19 @@
+{
+  "name": "avidal",
+  "owner": {
+    "name": "Andrés Vidal",
+    "url": "https://github.com/avidal2433"
+  },
+  "metadata": {
+    "description": "Agent skills packaged as plugins for Claude Code, Codex and opencode."
+  },
+  "plugins": [
+    {
+      "name": "bitbucket-code-review",
+      "source": "./plugins/bitbucket-code-review",
+      "description": "Technical review of Bitbucket pull requests with repository and ClickUp context; publishes verified findings as PR comments.",
+      "category": "development",
+      "keywords": ["bitbucket", "code-review", "pull-request", "clickup"]
+    }
+  ]
+}
