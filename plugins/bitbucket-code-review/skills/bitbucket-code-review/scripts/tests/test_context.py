@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import clickup_task
 import diff_line_map
 import history_context as history
+import removal_audit
 import review_context
 
 
@@ -30,6 +32,7 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(result['files'][0]['old_path'], 'old')
         self.assertNotIn('links', result)
         self.assertEqual(result['checks'], {'FAILED': 1})
+        self.assertEqual(result['check_runs'], [{'name': 'tests', 'state': 'FAILED', 'url': None}])
 
     def test_internal_task_does_not_require_workspace(self):
         with mock.patch.dict(os.environ, {'CLICKUP_API_KEY': 'test'}, clear=True), \
@@ -84,6 +87,31 @@ class HistoryTests(unittest.TestCase):
             result = history.prior_comments('ws', 'repo', [9], {'a'}, 'test')
         self.assertEqual(result[0]['body'], body)
         self.assertEqual(result[0]['parent'], 2)
+
+
+class RemovalAuditTests(unittest.TestCase):
+    def test_reports_dangling_and_orphaned_symbols(self):
+        with tempfile.TemporaryDirectory() as repo:
+            files = {
+                'app/Consumer.php': 'new Gadget();\n',
+                'app/Fields.php': "class Fields { public const string USER = 'user'; public const string NAME = 'n'; }\n",
+                'app/Other.php': 'Fields::NAME;\n',
+                'lang/en/login.php': "'messages' => ['reset' => 'Reset'],\n",
+            }
+            for path, content in files.items():
+                Path(repo, path).parent.mkdir(parents=True, exist_ok=True)
+                Path(repo, path).write_text(content)
+            git = lambda *a: subprocess.run(['git', '-C', repo, *a], check=True, capture_output=True)
+            git('init', '-q')
+            git('add', '.')
+            git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'head')
+            patch = ('diff --git a/app/Gadget.php b/app/Gadget.php\n--- a/app/Gadget.php\n+++ /dev/null\n'
+                     '@@ -1,3 +0,0 @@\n-class Gadget {\n-    $x = Fields::USER . Fields::NAME;\n'
+                     "-    trans('login.messages.reset');\n")
+            result = removal_audit.audit(removal_audit.parse_patch(patch), repo, 'HEAD')
+        self.assertEqual([d['symbol'] for d in result['dangling']], ['Gadget'])
+        self.assertEqual(sorted(o['symbol'] for o in result['orphans']),
+                         ['Fields::USER', 'login.messages.reset'])
 
 
 if __name__ == '__main__':
