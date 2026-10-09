@@ -34,6 +34,8 @@ def summarize(pr, stats, comments, statuses):
                       'inline': c.get('inline'), 'body': (c.get('content') or {}).get('raw', '')}
                      for c in comments if not c.get('deleted')],
         'checks': dict(Counter(s.get('state', 'UNKNOWN') for s in statuses)),
+        'check_runs': [{'name': s.get('name'), 'state': s.get('state'), 'url': s.get('url')}
+                       for s in statuses],
         'failed_checks': [{'name': s.get('name'), 'url': s.get('url'),
                            'description': s.get('description')} for s in statuses
                           if s.get('state') in ('FAILED', 'STOPPED')],
