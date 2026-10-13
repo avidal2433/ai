@@ -28,7 +28,9 @@ class ContextTests(unittest.TestCase):
             [{'id': 1, 'content': {'raw': body}, 'parent': {'id': 2}},
              {'id': 3, 'deleted': True}], [{'state': 'FAILED', 'name': 'tests'}])
         self.assertEqual(result['tasks'], ['abc123'])
-        self.assertEqual(result['comments'], [{'id': 1, 'parent': 2, 'inline': None, 'body': body}])
+        self.assertEqual(result['comments'], [{'id': 1, 'parent': 2, 'inline': None,
+                                              'resolved': False, 'body': body}])
+        self.assertIsNone(result['previous_review'])
         self.assertEqual(result['files'][0]['old_path'], 'old')
         self.assertNotIn('links', result)
         self.assertEqual(result['checks'], {'FAILED': 1})
@@ -51,6 +53,30 @@ class ContextTests(unittest.TestCase):
     def test_diff_content_cannot_replace_file_headers(self):
         diff = 'diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n--- value\n+++ value\n unchanged\n'
         self.assertEqual(diff_line_map.parse(diff), {'a.txt': {'to': [1], 'from': [1]}})
+
+
+class PreviousReviewTests(unittest.TestCase):
+    ACTIVITY = [
+        {'update': {'date': '2026-10-13T19:47:31+00:00', 'source': {'commit': {'hash': 'second'}}}},
+        {'comment': {'id': 9}},
+        {'update': {'date': '2026-10-13T13:15:54+00:00', 'source': {'commit': {'hash': 'first'}}}},
+    ]
+
+    def comment(self, raw, created_on, **extra):
+        return {'content': {'raw': raw}, 'created_on': created_on, **extra}
+
+    def test_commit_pushed_before_the_latest_ai_comment(self):
+        comments = [self.comment('(AI) a', '2026-10-13T14:56:37+00:00'),
+                    self.comment('(AI) b', '2026-10-13T20:13:03+00:00'),
+                    self.comment('human', '2026-10-13T21:00:00+00:00'),
+                    self.comment('(AI) deleted', '2026-10-13T22:00:00+00:00', deleted=True)]
+        self.assertEqual(review_context.previous_review(comments, self.ACTIVITY),
+                         {'commit': 'second', 'reviewed_at': '2026-10-13T20:13:03+00:00'})
+
+    def test_none_without_ai_comments_or_activity(self):
+        self.assertIsNone(review_context.previous_review([self.comment('human', '2026-10-13T20:00:00+00:00')],
+                                                         self.ACTIVITY))
+        self.assertIsNone(review_context.previous_review([self.comment('(AI) a', '2026-10-13T20:00:00+00:00')], []))
 
 
 class HistoryTests(unittest.TestCase):

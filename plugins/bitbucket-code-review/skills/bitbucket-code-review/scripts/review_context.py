@@ -3,10 +3,13 @@
 Uso: review_context.py <outdir>
 Genera review_context.json; stdout contiene el mismo JSON compacto.
 Los comentarios y descripciones se conservan completos; no incluye metadatos de API.
+previous_review: commit origen del PR cuando se publicó el último comentario (AI),
+según activity.json; null si no hay revisión previa o falta la actividad.
 """
 import json
 import sys
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 from semantic_release_check import extract_tasks
@@ -20,7 +23,26 @@ def revision(value):
             'repository': repo.get('full_name')}
 
 
-def summarize(pr, stats, comments, statuses):
+def _when(value):
+    return datetime.fromisoformat(value.replace('Z', '+00:00'))
+
+
+def previous_review(comments, activity):
+    ai_dates = [c['created_on'] for c in comments
+                if not c.get('deleted') and c.get('created_on')
+                and (c.get('content') or {}).get('raw', '').startswith('(AI)')]
+    if not ai_dates:
+        return None
+    reviewed_at = max(ai_dates, key=_when)
+    pushes = [(u['date'], ((u.get('source') or {}).get('commit') or {}).get('hash'))
+              for u in (a.get('update') for a in activity) if u and u.get('date')]
+    before = [p for p in pushes if p[1] and _when(p[0]) <= _when(reviewed_at)]
+    if not before:
+        return None
+    return {'commit': max(before, key=lambda p: _when(p[0]))[1], 'reviewed_at': reviewed_at}
+
+
+def summarize(pr, stats, comments, statuses, activity=None):
     description = pr.get('description') or (pr.get('summary') or {}).get('raw') or ''
     return {
         'id': pr.get('id'), 'title': pr.get('title'), 'state': pr.get('state'),
@@ -31,8 +53,10 @@ def summarize(pr, stats, comments, statuses):
                    'old_path': (s.get('old') or {}).get('path'), 'status': s.get('status'),
                    'added': s.get('lines_added', 0), 'removed': s.get('lines_removed', 0)} for s in stats],
         'comments': [{'id': c.get('id'), 'parent': (c.get('parent') or {}).get('id'),
-                      'inline': c.get('inline'), 'body': (c.get('content') or {}).get('raw', '')}
+                      'inline': c.get('inline'), 'resolved': bool(c.get('resolution')),
+                      'body': (c.get('content') or {}).get('raw', '')}
                      for c in comments if not c.get('deleted')],
+        'previous_review': previous_review(comments, activity or []),
         'checks': dict(Counter(s.get('state', 'UNKNOWN') for s in statuses)),
         'check_runs': [{'name': s.get('name'), 'state': s.get('state'), 'url': s.get('url')}
                        for s in statuses],
@@ -50,7 +74,9 @@ def main():
     try:
         data = [json.loads((args.outdir / name).read_text()) for name in
                 ('pr.json', 'diffstat.json', 'comments.json', 'statuses.json')]
-        result = summarize(*data)
+        activity_file = args.outdir / 'activity.json'
+        activity = json.loads(activity_file.read_text()) if activity_file.exists() else []
+        result = summarize(*data, activity)
         payload = json.dumps(result, ensure_ascii=False)
         (args.outdir / 'review_context.json').write_text(payload, encoding='utf-8')
         print(payload)
