@@ -13,6 +13,7 @@
 #   comments.json  — array de comentarios existentes (sin eliminados)
 #   statuses.json  — array de CI/checks del commit origen
 #   activity.json  — array de actividad (pushes y comentarios); fecha cada versión revisada
+#   user.json      — cuenta dueña del token, si el token puede leerla (opcional)
 set -euo pipefail
 
 WS="${1:?Uso: fetch_pr_data.sh <workspace> <repo_slug> <pr_id> [outdir]}"
@@ -65,6 +66,10 @@ fetch_paginated "${BASE}/pullrequests/${PR}/commits?pagelen=100"     "${OUT}/com
 fetch_paginated "${BASE}/pullrequests/${PR}/comments?pagelen=100"    "${OUT}/comments.json" & P4=$!
 fetch_paginated "${BASE}/commit/${SRC_COMMIT}/statuses?pagelen=100"  "${OUT}/statuses.json" & P5=$!
 fetch_paginated "${BASE}/pullrequests/${PR}/activity?pagelen=50"     "${OUT}/activity.json" & P6=$!
+
+# Opcional: identifica la cuenta revisora; un 403 por scope no bloquea la revisión.
+curl -sf -u "${BITBUCKET_EMAIL}:${BITBUCKET_API_TOKEN}" -o "${OUT}/user.json" "https://api.bitbucket.org/2.0/user" \
+  || rm -f "${OUT}/user.json"
 
 FAIL=0
 for p in "$P1" "$P2" "$P3" "$P4" "$P5" "$P6"; do wait "$p" || FAIL=1; done

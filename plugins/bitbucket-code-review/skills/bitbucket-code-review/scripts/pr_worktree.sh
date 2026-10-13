@@ -43,6 +43,13 @@ cmd_create() {
     esac
   done
 
+  local p
+  for p in ${copies[@]+"${copies[@]}"} ${links[@]+"${links[@]}"} ${dirs[@]+"${dirs[@]}"}; do
+    case "/$p/" in
+      //*|*/../*) echo "ERROR: ruta fuera del repositorio: $p (usa rutas relativas sin ..)" >&2; exit 2 ;;
+    esac
+  done
+
   local c
   for c in ${checks[@]+"${checks[@]}"}; do
     if ! (cd "$repo" && bash -c "$c") >/dev/null 2>&1; then
@@ -56,7 +63,6 @@ cmd_create() {
   [ -e "$dir" ] && { echo "ERROR: $dir ya existe" >&2; exit 1; }
   git -C "$repo" worktree add --quiet --detach "$dir" "$sha"
 
-  local p
   for p in ${copies[@]+"${copies[@]}"}; do
     [ -e "$repo/$p" ] || { echo "ERROR: --copy $p no existe en $repo" >&2; exit 1; }
     cow_copy "$repo/$p" "$dir/$p"

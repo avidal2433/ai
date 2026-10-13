@@ -211,24 +211,38 @@ class ThreadTests(unittest.TestCase):
         pub.post_reply("(AI) ok", 3)
         self.assertEqual(t.calls[0][2], {"content": {"raw": "(AI) ok"}, "parent": {"id": 3}})
 
+    def ai(self, author="me", **extra):
+        return {"content": {"raw": "(AI) x"}, "user": {"account_id": author}, **extra}
+
     def test_resolves_ai_root_comment(self):
-        pub, t = self.pub({"content": {"raw": "(AI) x"}, "resolution": {}}, {"type": "comment_resolution"})
-        self.assertEqual(bc.resolve_comment(pub, 3), (True, "resolved", None))
+        pub, t = self.pub(self.ai(resolution={}), {"type": "comment_resolution"})
+        self.assertEqual(bc.resolve_comment(pub, 3, "me"), (True, "resolved", None))
         self.assertEqual(t.calls[1][:2], ("POST", f"{bc.API}/repositories/ws/repo/pullrequests/7/comments/3/resolve"))
 
     def test_human_comment_is_left_untouched(self):
-        pub, t = self.pub({"content": {"raw": "por favor revisa"}})
-        self.assertEqual(bc.resolve_comment(pub, 3)[:2], (False, "skipped"))
+        pub, t = self.pub({"content": {"raw": "por favor revisa"}, "user": {"account_id": "me"}})
+        self.assertEqual(bc.resolve_comment(pub, 3, "me")[:2], (False, "skipped"))
+        self.assertEqual(len(t.calls), 1)
+
+    def test_ai_prefix_from_another_account_is_left_untouched(self):
+        pub, t = self.pub(self.ai(author="someone"))
+        self.assertEqual(bc.resolve_comment(pub, 3, "me")[:2], (False, "skipped"))
         self.assertEqual(len(t.calls), 1)
 
     def test_reply_is_not_resolved(self):
-        pub, t = self.pub({"content": {"raw": "(AI) x"}, "parent": {"id": 1}})
-        self.assertEqual(bc.resolve_comment(pub, 3)[:2], (False, "skipped"))
+        pub, t = self.pub(self.ai(parent={"id": 1}))
+        self.assertEqual(bc.resolve_comment(pub, 3, "me")[:2], (False, "skipped"))
         self.assertEqual(len(t.calls), 1)
 
     def test_already_resolved_counts_as_ok(self):
-        pub, _ = self.pub({"content": {"raw": "(AI) x"}}, bc.BitbucketError(409, "resolved"))
-        self.assertEqual(bc.resolve_comment(pub, 3), (True, "already_resolved", None))
+        pub, _ = self.pub(self.ai(), bc.BitbucketError(409, "resolved"))
+        self.assertEqual(bc.resolve_comment(pub, 3, "me"), (True, "already_resolved", None))
+
+    def test_resolve_cli_refuses_without_reviewer_identity(self):
+        with mock.patch.dict(os.environ, {"BITBUCKET_EMAIL": "e", "BITBUCKET_API_TOKEN": "t"}, clear=True), \
+             mock.patch.object(bc, "reviewer_identity", return_value=None), \
+             mock.patch("sys.stderr"):
+            self.assertEqual(bc.main(["x", "resolve", "ws", "repo", "7", "3"]), 2)
 
 
 class WorktreeTests(unittest.TestCase):
@@ -263,6 +277,12 @@ class WorktreeTests(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(self.wt, "storage", "logs")))
         self.assertEqual(self.run_script("remove", self.repo, self.wt).returncode, 0)
         self.assertFalse(os.path.exists(self.wt))
+
+    def test_paths_outside_the_repository_are_rejected(self):
+        for flag, path in (("--copy", "../outside"), ("--link", "/etc/hosts"), ("--mkdir", "a/../../b")):
+            out = self.run_script("create", self.repo, self.sha, self.wt, flag, path)
+            self.assertEqual(out.returncode, 2, (flag, path))
+            self.assertFalse(os.path.exists(self.wt))
 
     def test_failed_check_exits_3_without_worktree(self):
         out = self.run_script("create", self.repo, self.sha, self.wt, "--check", "false")

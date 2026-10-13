@@ -3,7 +3,7 @@ name: bitbucket-code-review
 description: "Revisión técnica de un PR de Bitbucket con contexto del repositorio y de ClickUp cuando esté enlazado. Usar ante una solicitud explícita de revisar un PR (URL o número); no ante preguntas sobre la skill o URLs sin solicitud de revisión. Publica hallazgos confirmados cuando el usuario lo autoriza."
 metadata:
   author: Andrés Vidal
-  version: 4.3.0
+  version: 4.3.1
   requires:
     env:
       - BITBUCKET_API_TOKEN
@@ -14,6 +14,7 @@ metadata:
       - CLICKUP_API_KEY  # contexto de tareas ClickUp enlazadas (scripts/clickup_task.py)
       - CLICKUP_WORKSPACE_ID  # solo para custom IDs de ClickUp (p. ej. TF-1234)
       - BITBUCKET_WORKSPACE  # valor por defecto cuando el PR no llega como URL completa
+      - BITBUCKET_ACCOUNT_ID  # cuenta revisora, si el token no puede leer GET /user; la usan la re-revisión y resolve
   bins:
     - git
     - curl
@@ -41,7 +42,7 @@ Leer la salida compacta y `diff.patch`; `check_runs` nombra cada check de CI con
 
 No revisar PRs cerrados, merged, draft o de bots conocidos salvo pedido explícito.
 
-**Re-revisión.** `previous_review.commit` es la versión del PR que recibió el último comentario `(AI)`. Leer primero `git diff <previous_review.commit> <source.commit.hash>` y decidir con esa diferencia si cada comentario `(AI)` sin resolver sigue vigente; después comprobar que el resto del PR no cambió de contexto (un merge de destination puede cambiarlo). Si ese commit ya no existe (force push), revisar el PR completo. Los comentarios `(AI)` no prueban que la versión actual haya sido revisada.
+**Re-revisión.** `previous_review.commit` es la versión del PR que recibió el último comentario `(AI)` de la cuenta revisora; si es null (sin revisión previa o sin identidad de la cuenta), revisar el PR completo. Leer primero `git diff <previous_review.commit> <source.commit.hash>` y decidir con esa diferencia si cada comentario `(AI)` sin resolver sigue vigente; después comprobar que el resto del PR no cambió de contexto (un merge de destination puede cambiarlo). Si ese commit ya no existe (force push), revisar el PR completo. Los comentarios `(AI)` no prueban que la versión actual haya sido revisada.
 
 ## 2. Repositorio y tarea
 
@@ -54,7 +55,7 @@ bash <skill>/scripts/pr_worktree.sh create <repository_path> <source.commit.hash
 bash <skill>/scripts/pr_worktree.sh remove <repository_path> <dir>
 ```
 
-`--check` recibe cada prerrequisito de los tests (base de datos, servicios) y corre antes de crear nada: si sale con 3, la revisión continúa sin ejecución y lo declara como limitación desde ese momento. `--copy` clona dependencias no versionadas (copy-on-write) y `--link` enlaza archivos de configuración; `--mkdir` crea los directorios de runtime que git no versiona. Elegir las rutas según el stack del repo y eliminar el worktree al terminar.
+`--check` recibe cada prerrequisito de los tests (base de datos, servicios), escrito por quien revisa a partir del entorno conocido, y corre antes de crear nada: si sale con 3, la revisión continúa sin ejecución y lo declara como limitación desde ese momento. `--copy` clona dependencias no versionadas (copy-on-write) y `--link` enlaza archivos de configuración; `--mkdir` crea los directorios de runtime que git no versiona. Elegir las rutas según el stack del repo y eliminar el worktree al terminar.
 
 Leer las instrucciones aplicables (`AGENTS.md`, `CLAUDE.md`, incluidas las de subdirectorios), manifiestos y configuración relevante del repositorio. Descubrir el stack; no asumir lenguaje, framework, estructura de capas, dominio de negocio ni convenciones de releases.
 
@@ -119,6 +120,6 @@ python3 <skill>/scripts/bitbucket_comments.py resolve <workspace> <repo_slug> <p
 python3 <skill>/scripts/bitbucket_comments.py reply <workspace> <repo_slug> <pr_id> <comment_id> --body "<texto>"
 ```
 
-`resolve` solo actúa sobre comentarios raíz `(AI)`; devuelve `skipped` para los demás.
+`resolve` solo actúa sobre comentarios raíz `(AI)` de la cuenta revisora; devuelve `skipped` para los demás.
 
 Responder brevemente con enlace del PR, cobertura, versión del código revisada, contexto ClickUp/historia utilizado u omitido, CI, hallazgos confirmados, comentarios publicados (inline/global) e hilos resueltos. Explicar limitaciones y candidatos pendientes con motivo. Si no hay hallazgos publicables, decirlo sin inventar comentarios para justificar el trabajo. No volcar el análisis completo salvo que se solicite.

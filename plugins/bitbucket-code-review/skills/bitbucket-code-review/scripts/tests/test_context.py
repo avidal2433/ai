@@ -62,21 +62,28 @@ class PreviousReviewTests(unittest.TestCase):
         {'update': {'date': '2026-10-13T13:15:54+00:00', 'source': {'commit': {'hash': 'first'}}}},
     ]
 
-    def comment(self, raw, created_on, **extra):
-        return {'content': {'raw': raw}, 'created_on': created_on, **extra}
+    def comment(self, raw, created_on, author='reviewer', **extra):
+        return {'content': {'raw': raw}, 'created_on': created_on, 'user': {'account_id': author}, **extra}
 
     def test_commit_pushed_before_the_latest_ai_comment(self):
         comments = [self.comment('(AI) a', '2026-10-13T14:56:37+00:00'),
                     self.comment('(AI) b', '2026-10-13T20:13:03+00:00'),
                     self.comment('human', '2026-10-13T21:00:00+00:00'),
                     self.comment('(AI) deleted', '2026-10-13T22:00:00+00:00', deleted=True)]
-        self.assertEqual(review_context.previous_review(comments, self.ACTIVITY),
+        self.assertEqual(review_context.previous_review(comments, self.ACTIVITY, 'reviewer'),
                          {'commit': 'second', 'reviewed_at': '2026-10-13T20:13:03+00:00'})
 
-    def test_none_without_ai_comments_or_activity(self):
+    def test_ai_prefix_from_another_account_is_ignored(self):
+        comments = [self.comment('(AI) a', '2026-10-13T14:56:37+00:00'),
+                    self.comment('(AI) spoof', '2026-10-13T20:13:03+00:00', author='pr-author')]
+        self.assertEqual(review_context.previous_review(comments, self.ACTIVITY, 'reviewer')['commit'], 'first')
+
+    def test_none_without_identity_ai_comments_or_activity(self):
+        ai = [self.comment('(AI) a', '2026-10-13T20:00:00+00:00')]
+        self.assertIsNone(review_context.previous_review(ai, self.ACTIVITY, None))
         self.assertIsNone(review_context.previous_review([self.comment('human', '2026-10-13T20:00:00+00:00')],
-                                                         self.ACTIVITY))
-        self.assertIsNone(review_context.previous_review([self.comment('(AI) a', '2026-10-13T20:00:00+00:00')], []))
+                                                         self.ACTIVITY, 'reviewer'))
+        self.assertIsNone(review_context.previous_review(ai, [], 'reviewer'))
 
 
 class HistoryTests(unittest.TestCase):

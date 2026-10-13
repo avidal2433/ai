@@ -30,8 +30,9 @@ y una línea final {"summary": {"inline", "global", "fallback", "failed"}}.
 --dry-run: solo pasos 1-2, no publica nada.
 
 reply responde dentro del hilo de un comentario. resolve solo resuelve hilos cuyo
-comentario raíz empieza con "(AI)"; los de personas quedan intactos. Un hilo ya resuelto
-cuenta como ok. Salida: una línea JSON por comment_id {"id", "ok", "status", "error"}.
+comentario raíz empieza con "(AI)" y fue publicado por la cuenta revisora
+(BITBUCKET_ACCOUNT_ID o, si el token lo permite, GET /user); sin esa identidad no
+resuelve nada. Un hilo ya resuelto cuenta como ok. Salida: una línea JSON por comment_id {"id", "ok", "status", "error"}.
 
 Exit: 0 todo publicado · 1 alguna entrada falló · 2 error de uso.
 """
@@ -256,12 +257,25 @@ def cmd_reply(args):
     return 0
 
 
-def resolve_comment(pub, comment_id):
-    """Resuelve un hilo (AI). Devuelve (ok, status, error)."""
+def reviewer_identity(auth):
+    if os.environ.get("BITBUCKET_ACCOUNT_ID"):
+        return os.environ["BITBUCKET_ACCOUNT_ID"]
+    try:
+        user = request("GET", f"{API}/user", auth=auth)[1] or {}
+    except BitbucketError:
+        return None
+    return user.get("account_id") or user.get("uuid")
+
+
+def resolve_comment(pub, comment_id, reviewer):
+    """Resuelve un hilo (AI) de la cuenta revisora. Devuelve (ok, status, error)."""
     try:
         comment = pub.get(comment_id) or {}
         if not (comment.get("content") or {}).get("raw", "").startswith(AI_PREFIX):
             return False, "skipped", "el comentario no es (AI)"
+        user = comment.get("user") or {}
+        if reviewer not in (user.get("account_id"), user.get("uuid")):
+            return False, "skipped", "el comentario no es de la cuenta revisora"
         if comment.get("parent"):
             return False, "skipped", "solo se resuelve el comentario raíz del hilo"
         if comment.get("resolution"):
@@ -275,10 +289,16 @@ def resolve_comment(pub, comment_id):
 
 
 def cmd_resolve(args):
-    pub = Publisher(args.workspace, args.repo_slug, args.pr_id, auth=auth_header())
+    auth = auth_header()
+    reviewer = reviewer_identity(auth)
+    if not reviewer:
+        print("ERROR: no se pudo identificar la cuenta revisora; define BITBUCKET_ACCOUNT_ID "
+              "(account_id de Bitbucket del dueño del token)", file=sys.stderr)
+        return 2
+    pub = Publisher(args.workspace, args.repo_slug, args.pr_id, auth=auth)
     failed = 0
     for comment_id in args.comment_ids:
-        ok, status, err = resolve_comment(pub, comment_id)
+        ok, status, err = resolve_comment(pub, comment_id, reviewer)
         failed += not ok
         print(json.dumps({"id": comment_id, "ok": ok, "status": status, "error": err}, ensure_ascii=False))
     return 0 if failed == 0 else 1
