@@ -3,7 +3,7 @@ name: bitbucket-code-review
 description: "Revisión técnica de un PR de Bitbucket con contexto del repositorio y de ClickUp cuando esté enlazado. Usar ante una solicitud explícita de revisar un PR (URL o número); no ante preguntas sobre la skill o URLs sin solicitud de revisión. Publica hallazgos confirmados cuando el usuario lo autoriza."
 metadata:
   author: Andrés Vidal
-  version: 4.1.2
+  version: 4.3.0
   requires:
     env:
       - BITBUCKET_API_TOKEN
@@ -39,11 +39,22 @@ python3 <skill>/scripts/review_context.py <outdir>
 
 Leer la salida compacta y `diff.patch`; `check_runs` nombra cada check de CI con su URL, para reportar qué validó el CI y qué no; los JSON originales quedan disponibles para consultas puntuales. No cargar también todos los originales. En PRs grandes, leer el diff por archivo, cubriendo primero el inventario completo de `files`.
 
-No revisar PRs cerrados, merged, draft o de bots conocidos salvo pedido explícito. Los comentarios `(AI)` no prueban que esta versión haya sido revisada: en una re-revisión deduplicar lo existente y analizar los cambios vigentes.
+No revisar PRs cerrados, merged, draft o de bots conocidos salvo pedido explícito.
+
+**Re-revisión.** `previous_review.commit` es la versión del PR que recibió el último comentario `(AI)`. Leer primero `git diff <previous_review.commit> <source.commit.hash>` y decidir con esa diferencia si cada comentario `(AI)` sin resolver sigue vigente; después comprobar que el resto del PR no cambió de contexto (un merge de destination puede cambiarlo). Si ese commit ya no existe (force push), revisar el PR completo. Los comentarios `(AI)` no prueban que la versión actual haya sido revisada.
 
 ## 2. Repositorio y tarea
 
 **Código correcto.** Resolver `repository_path` por el remoto git que corresponda al PR o por indicación del usuario. Comprobar el SHA de `source.commit.hash`; leer archivos de esa versión (`git show <sha>:<path>` o checkout aislado), sin cambiar la rama ni descartar modificaciones del usuario. Para PRs desde forks, comprobar también el repositorio origen. Si falta el commit, intentar obtenerlo con las herramientas y permisos disponibles. Sin acceso a esa versión, declarar revisión parcial y no confirmar hallazgos que dependan de código ausente.
+
+**Checkout aislado.** Para ejecutar código o tests del PR, crear un worktree del commit origen:
+
+```bash
+bash <skill>/scripts/pr_worktree.sh create <repository_path> <source.commit.hash> <dir> --check '<prerrequisito>' --copy <dependencias> --link <configuración>
+bash <skill>/scripts/pr_worktree.sh remove <repository_path> <dir>
+```
+
+`--check` recibe cada prerrequisito de los tests (base de datos, servicios) y corre antes de crear nada: si sale con 3, la revisión continúa sin ejecución y lo declara como limitación desde ese momento. `--copy` clona dependencias no versionadas (copy-on-write) y `--link` enlaza archivos de configuración; `--mkdir` crea los directorios de runtime que git no versiona. Elegir las rutas según el stack del repo y eliminar el worktree al terminar.
 
 Leer las instrucciones aplicables (`AGENTS.md`, `CLAUDE.md`, incluidas las de subdirectorios), manifiestos y configuración relevante del repositorio. Descubrir el stack; no asumir lenguaje, framework, estructura de capas, dominio de negocio ni convenciones de releases.
 
@@ -73,6 +84,8 @@ python3 <skill>/scripts/removal_audit.py <outdir> <repository_path> <source.comm
 
 Comprobar comportamiento frente al objetivo del PR, entradas y estados límite, autorización y aislamiento de datos, errores, concurrencia, compatibilidad y costos de consultas/I/O. Evaluar arquitectura y mantenibilidad contra decisiones reales del repo. Pedir tests para un riesgo concreto; evitar recomendaciones genéricas y lo que ya diagnostica CI. Un test es **vacuo** cuando pasaría aunque el comportamiento estuviera roto: aserciones sobre una consulta nueva que no lleva el filtro u orden bajo prueba, o sobre un texto que también aparece fuera del elemento verificado (por ejemplo, en toda la página). Señalarlo si el PR agrega o modifica ese test, o si un test vacuo existente es la única cobertura del comportamiento que el PR cambia.
 
+**Tests que demuestran un cambio.** Si el PR agrega o modifica tests del comportamiento que cambia y el entorno puede ejecutarlos, correrlos en el checkout aislado; después revertir solo el hunk de producción que implementa ese comportamiento, conservando firmas y símbolos nuevos, y correrlos otra vez. Cada test tiene que ponerse en rojo por una aserción; un error por símbolo faltante no cuenta. Un test que sigue en verde es vacuo, y esa corrida es la evidencia del hallazgo. Restaurar el archivo antes de seguir.
+
 **Historia bajo demanda.** Consultarla si se elimina una protección, se sospecha una regresión o hace falta entender una decisión anterior; enfocarse en esos archivos. Leer [historical-context.md](references/historical-context.md) solo entonces. No inferir defectos por churn ni convertir una objeción antigua en regla del equipo sin leer su resolución.
 
 Registrar cobertura real: revisados, inspeccionados superficialmente y omitidos con motivo. Los archivos generados, binarios o grandes requieren justificar cómo se comprobaron o por qué quedaron pendientes; no ocultarlos porque no aparezcan en el mapa textual.
@@ -99,4 +112,13 @@ Inspeccionar ubicación y fallback. Si el script propone una línea cercana, com
 
 Ejecutar el mismo comando sin `--dry-run`. Usar `ok`, `mode` e `id` de la salida para contar publicaciones reales. Si una petición queda con resultado incierto o hay éxito parcial, consultar comentarios existentes antes de reintentar; nunca repetir todo el lote a ciegas.
 
-Responder brevemente con enlace del PR, cobertura, versión del código revisada, contexto ClickUp/historia utilizado u omitido, CI, hallazgos confirmados y comentarios publicados (inline/global). Explicar limitaciones y candidatos pendientes con motivo. Si no hay hallazgos publicables, decirlo sin inventar comentarios para justificar el trabajo. No volcar el análisis completo salvo que se solicite.
+**Hilos atendidos.** Con la misma autorización de publicar, resolver cada comentario `(AI)` sin resolver cuyo defecto ya no existe en la versión revisada, comprobado en el código. Si la corrección es parcial, responder en el hilo con lo que falta en vez de resolverlo.
+
+```bash
+python3 <skill>/scripts/bitbucket_comments.py resolve <workspace> <repo_slug> <pr_id> <comment_id> [<comment_id> ...]
+python3 <skill>/scripts/bitbucket_comments.py reply <workspace> <repo_slug> <pr_id> <comment_id> --body "<texto>"
+```
+
+`resolve` solo actúa sobre comentarios raíz `(AI)`; devuelve `skipped` para los demás.
+
+Responder brevemente con enlace del PR, cobertura, versión del código revisada, contexto ClickUp/historia utilizado u omitido, CI, hallazgos confirmados, comentarios publicados (inline/global) e hilos resueltos. Explicar limitaciones y candidatos pendientes con motivo. Si no hay hallazgos publicables, decirlo sin inventar comentarios para justificar el trabajo. No volcar el análisis completo salvo que se solicite.

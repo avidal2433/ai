@@ -201,6 +201,76 @@ class PublishFlowTests(unittest.TestCase):
             self.publish({"body": "x"}, bc.BitbucketError(401, "nope"))
 
 
+class ThreadTests(unittest.TestCase):
+    def pub(self, *script):
+        t = FakeTransport(*script)
+        return bc.Publisher("ws", "repo", 7, transport=t, auth="x"), t
+
+    def test_reply_goes_into_the_thread(self):
+        pub, t = self.pub({"id": 10})
+        pub.post_reply("(AI) ok", 3)
+        self.assertEqual(t.calls[0][2], {"content": {"raw": "(AI) ok"}, "parent": {"id": 3}})
+
+    def test_resolves_ai_root_comment(self):
+        pub, t = self.pub({"content": {"raw": "(AI) x"}, "resolution": {}}, {"type": "comment_resolution"})
+        self.assertEqual(bc.resolve_comment(pub, 3), (True, "resolved", None))
+        self.assertEqual(t.calls[1][:2], ("POST", f"{bc.API}/repositories/ws/repo/pullrequests/7/comments/3/resolve"))
+
+    def test_human_comment_is_left_untouched(self):
+        pub, t = self.pub({"content": {"raw": "por favor revisa"}})
+        self.assertEqual(bc.resolve_comment(pub, 3)[:2], (False, "skipped"))
+        self.assertEqual(len(t.calls), 1)
+
+    def test_reply_is_not_resolved(self):
+        pub, t = self.pub({"content": {"raw": "(AI) x"}, "parent": {"id": 1}})
+        self.assertEqual(bc.resolve_comment(pub, 3)[:2], (False, "skipped"))
+        self.assertEqual(len(t.calls), 1)
+
+    def test_already_resolved_counts_as_ok(self):
+        pub, _ = self.pub({"content": {"raw": "(AI) x"}}, bc.BitbucketError(409, "resolved"))
+        self.assertEqual(bc.resolve_comment(pub, 3), (True, "already_resolved", None))
+
+
+class WorktreeTests(unittest.TestCase):
+    SCRIPT = os.path.join(SCRIPTS, "pr_worktree.sh")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", self.tmp]))
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(self.repo, "vendor"))
+        for path, content in (("app.txt", "code"), ("vendor/lib.txt", "dep"), (".env", "X=1"),
+                              (".gitignore", "vendor/\n.env\n")):
+            with open(os.path.join(self.repo, path), "w", encoding="utf-8") as f:
+                f.write(content)
+        git = lambda *a: subprocess.run(["git", "-C", self.repo, *a], check=True, capture_output=True, text=True)
+        git("init", "-q")
+        git("add", "app.txt", ".gitignore")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "head")
+        self.sha = git("rev-parse", "HEAD").stdout.strip()
+        self.wt = os.path.join(self.tmp, "wt")
+
+    def run_script(self, *args):
+        return subprocess.run(["bash", self.SCRIPT, *args], capture_output=True, text=True)
+
+    def test_create_copies_links_and_removes(self):
+        out = self.run_script("create", self.repo, self.sha, self.wt, "--copy", "vendor",
+                              "--link", ".env", "--mkdir", "storage/logs", "--check", "true")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertFalse(os.path.islink(os.path.join(self.wt, "vendor")))
+        self.assertTrue(os.path.isfile(os.path.join(self.wt, "vendor", "lib.txt")))
+        self.assertTrue(os.path.islink(os.path.join(self.wt, ".env")))
+        self.assertTrue(os.path.isdir(os.path.join(self.wt, "storage", "logs")))
+        self.assertEqual(self.run_script("remove", self.repo, self.wt).returncode, 0)
+        self.assertFalse(os.path.exists(self.wt))
+
+    def test_failed_check_exits_3_without_worktree(self):
+        out = self.run_script("create", self.repo, self.sha, self.wt, "--check", "false")
+        self.assertEqual(out.returncode, 3)
+        self.assertIn("PRERREQUISITO NO DISPONIBLE", out.stderr)
+        self.assertFalse(os.path.exists(self.wt))
+
+
 class PublishCliTests(unittest.TestCase):
     SCRIPT = os.path.join(SCRIPTS, "bitbucket_comments.py")
 

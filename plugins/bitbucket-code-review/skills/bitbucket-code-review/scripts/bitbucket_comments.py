@@ -5,6 +5,8 @@ bitbucket_comments.py — Publica comentarios de code review en un PR de Bitbuck
 Uso:
   python3 bitbucket_comments.py publish <workspace> <repo_slug> <pr_id> <publish.json> --diff <diff.patch> [--dry-run]
   python3 bitbucket_comments.py global  <workspace> <repo_slug> <pr_id> (--body-file <archivo> | --body "<texto>")
+  python3 bitbucket_comments.py reply   <workspace> <repo_slug> <pr_id> <comment_id> (--body-file <archivo> | --body "<texto>")
+  python3 bitbucket_comments.py resolve <workspace> <repo_slug> <pr_id> <comment_id> [<comment_id> ...]
 
 Requiere: BITBUCKET_EMAIL, BITBUCKET_API_TOKEN (App Password).
 
@@ -26,6 +28,10 @@ Salida: una línea JSON por entrada
   {"index", "mode": "inline|global|global_fallback", "id", "path", "line", "kind", "ok", "error", "reason"}
 y una línea final {"summary": {"inline", "global", "fallback", "failed"}}.
 --dry-run: solo pasos 1-2, no publica nada.
+
+reply responde dentro del hilo de un comentario. resolve solo resuelve hilos cuyo
+comentario raíz empieza con "(AI)"; los de personas quedan intactos. Un hilo ya resuelto
+cuenta como ok. Salida: una línea JSON por comment_id {"id", "ok", "status", "error"}.
 
 Exit: 0 todo publicado · 1 alguna entrada falló · 2 error de uso.
 """
@@ -102,6 +108,15 @@ class Publisher:
     def post_inline(self, body, path, line, kind):
         payload = {"content": {"raw": body}, "inline": {"path": path, kind: line}}
         return self._call("POST", self.base, payload)[1]
+
+    def post_reply(self, body, parent_id):
+        return self._call("POST", self.base, {"content": {"raw": body}, "parent": {"id": parent_id}})[1]
+
+    def get(self, comment_id):
+        return self._call("GET", f"{self.base}/{comment_id}")[1]
+
+    def resolve(self, comment_id):
+        return self._call("POST", f"{self.base}/{comment_id}/resolve")[1]
 
     def delete(self, comment_id):
         """Best-effort: se usa para retirar un inline que la API ubicó en otra línea."""
@@ -211,12 +226,15 @@ def cmd_publish(args):
     return 0 if summary["failed"] == 0 else 1
 
 
-def cmd_global(args):
+def read_body(args):
     if args.body_file:
         with open(args.body_file, encoding="utf-8") as f:
-            body = f.read()
-    else:
-        body = args.body
+            return f.read()
+    return args.body
+
+
+def cmd_global(args):
+    body = read_body(args)
     pub = Publisher(args.workspace, args.repo_slug, args.pr_id, auth=auth_header())
     try:
         data = pub.post_global(with_ai_prefix(body)) or {}
@@ -225,6 +243,45 @@ def cmd_global(args):
         return 1
     print(json.dumps({"mode": "global", "id": data.get("id"), "ok": True}))
     return 0
+
+
+def cmd_reply(args):
+    pub = Publisher(args.workspace, args.repo_slug, args.pr_id, auth=auth_header())
+    try:
+        data = pub.post_reply(with_ai_prefix(read_body(args)), args.comment_id) or {}
+    except BitbucketError as e:
+        print(json.dumps({"mode": "reply", "parent": args.comment_id, "ok": False, "error": str(e)}))
+        return 1
+    print(json.dumps({"mode": "reply", "parent": args.comment_id, "id": data.get("id"), "ok": True}))
+    return 0
+
+
+def resolve_comment(pub, comment_id):
+    """Resuelve un hilo (AI). Devuelve (ok, status, error)."""
+    try:
+        comment = pub.get(comment_id) or {}
+        if not (comment.get("content") or {}).get("raw", "").startswith(AI_PREFIX):
+            return False, "skipped", "el comentario no es (AI)"
+        if comment.get("parent"):
+            return False, "skipped", "solo se resuelve el comentario raíz del hilo"
+        if comment.get("resolution"):
+            return True, "already_resolved", None
+        pub.resolve(comment_id)
+        return True, "resolved", None
+    except BitbucketError as e:
+        if e.status == 409:
+            return True, "already_resolved", None
+        return False, "failed", str(e)
+
+
+def cmd_resolve(args):
+    pub = Publisher(args.workspace, args.repo_slug, args.pr_id, auth=auth_header())
+    failed = 0
+    for comment_id in args.comment_ids:
+        ok, status, err = resolve_comment(pub, comment_id)
+        failed += not ok
+        print(json.dumps({"id": comment_id, "ok": ok, "status": status, "error": err}, ensure_ascii=False))
+    return 0 if failed == 0 else 1
 
 
 def main(argv):
@@ -244,6 +301,18 @@ def main(argv):
     src = g.add_mutually_exclusive_group(required=True)
     src.add_argument("--body-file"); src.add_argument("--body")
     g.set_defaults(func=cmd_global)
+
+    r = sub.add_parser("reply", help="responde dentro del hilo de un comentario")
+    r.add_argument("workspace"); r.add_argument("repo_slug"); r.add_argument("pr_id", type=int)
+    r.add_argument("comment_id", type=int)
+    src = r.add_mutually_exclusive_group(required=True)
+    src.add_argument("--body-file"); src.add_argument("--body")
+    r.set_defaults(func=cmd_reply)
+
+    v = sub.add_parser("resolve", help="resuelve hilos (AI) ya atendidos")
+    v.add_argument("workspace"); v.add_argument("repo_slug"); v.add_argument("pr_id", type=int)
+    v.add_argument("comment_ids", type=int, nargs="+")
+    v.set_defaults(func=cmd_resolve)
 
     args = ap.parse_args(argv[1:])
     return args.func(args)
