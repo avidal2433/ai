@@ -2,7 +2,9 @@
 """Resume datos locales del PR sin red ni pérdida de los originales.
 Uso: review_context.py <outdir>
 Genera review_context.json; stdout contiene el mismo JSON compacto.
-Los comentarios y descripciones se conservan completos; no incluye metadatos de API.
+La descripción y los hilos abiertos se conservan completos; los cuerpos de hilos resueltos
+se recortan a RESOLVED_BODY_CHARS (truncated: true; el original sigue en comments.json).
+No incluye metadatos de API.
 previous_review: commit origen del PR cuando la cuenta revisora publicó su último
 comentario (AI), según activity.json. Cualquiera puede escribir "(AI)", así que solo
 cuentan los comentarios de esa cuenta (BITBUCKET_ACCOUNT_ID o user.json); sin identidad,
@@ -16,6 +18,8 @@ from datetime import datetime
 from pathlib import Path
 
 from semantic_release_check import extract_tasks
+
+RESOLVED_BODY_CHARS = 200
 
 
 def revision(value):
@@ -60,8 +64,41 @@ def previous_review(comments, activity, reviewer=None):
     return {'commit': max(before, key=lambda p: _when(p[0]))[1], 'reviewed_at': reviewed_at}
 
 
+def thread_root(comment, by_id):
+    seen = set()
+    while (comment.get('parent') or {}).get('id') in by_id and comment['id'] not in seen:
+        seen.add(comment['id'])
+        comment = by_id[comment['parent']['id']]
+    return comment
+
+
+def compact_comment(comment, by_id):
+    # En el listado, resolution es null si el hilo sigue abierto; {} también es un hilo resuelto.
+    # La resolución es del hilo: solo la lleva el comentario raíz.
+    parent = (comment.get('parent') or {}).get('id')
+    body = (comment.get('content') or {}).get('raw', '')
+    inline = comment.get('inline')
+    entry = {'id': comment.get('id'), 'parent': parent,
+             'inline': {k: inline.get(k) for k in ('path', 'from', 'to', 'outdated') if inline.get(k) is not None}
+             if inline and not parent else None,
+             'author': (comment.get('user') or {}).get('display_name'),
+             'created_on': comment.get('created_on')}
+    if not parent:
+        resolution = comment.get('resolution')
+        entry['resolved'] = resolution is not None
+        if resolution is not None:
+            entry['resolved_by'] = (resolution.get('user') or {}).get('display_name')
+            entry['resolved_on'] = resolution.get('created_on')
+    if thread_root(comment, by_id).get('resolution') is not None and len(body) > RESOLVED_BODY_CHARS:
+        body, entry['truncated'] = body[:RESOLVED_BODY_CHARS] + '…', True
+    entry['body'] = body
+    return {k: v for k, v in entry.items() if v is not None}
+
+
 def summarize(pr, stats, comments, statuses, activity=None, reviewer=None):
     description = pr.get('description') or (pr.get('summary') or {}).get('raw') or ''
+    live = [c for c in comments if not c.get('deleted')]
+    by_id = {c.get('id'): c for c in live}
     return {
         'id': pr.get('id'), 'title': pr.get('title'), 'state': pr.get('state'),
         'draft': pr.get('draft', False), 'author': pr.get('author', {}).get('display_name'),
@@ -70,10 +107,7 @@ def summarize(pr, stats, comments, statuses, activity=None, reviewer=None):
         'files': [{'path': (s.get('new') or s.get('old') or {}).get('path'),
                    'old_path': (s.get('old') or {}).get('path'), 'status': s.get('status'),
                    'added': s.get('lines_added', 0), 'removed': s.get('lines_removed', 0)} for s in stats],
-        'comments': [{'id': c.get('id'), 'parent': (c.get('parent') or {}).get('id'),
-                      'inline': c.get('inline'), 'resolved': bool(c.get('resolution')),
-                      'body': (c.get('content') or {}).get('raw', '')}
-                     for c in comments if not c.get('deleted')],
+        'comments': [compact_comment(c, by_id) for c in live],
         'previous_review': previous_review(comments, activity or [], reviewer),
         'checks': dict(Counter(s.get('state', 'UNKNOWN') for s in statuses)),
         'check_runs': [{'name': s.get('name'), 'state': s.get('state'), 'url': s.get('url')}

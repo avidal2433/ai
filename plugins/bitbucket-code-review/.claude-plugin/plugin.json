@@ -1,6 +1,6 @@
 {
   "name": "bitbucket-code-review",
-  "version": "4.3.1",
+  "version": "4.4.0",
   "description": "Technical review of Bitbucket pull requests with repository and ClickUp context; publishes verified findings as PR comments.",
   "author": {
     "name": "Andrés Vidal",
