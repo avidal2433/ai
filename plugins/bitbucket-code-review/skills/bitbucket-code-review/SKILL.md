@@ -3,7 +3,7 @@ name: bitbucket-code-review
 description: "Revisión técnica de un PR de Bitbucket con contexto del repositorio y de ClickUp cuando esté enlazado. Usar ante una solicitud explícita de revisar un PR (URL o número); no ante preguntas sobre la skill o URLs sin solicitud de revisión. Publica hallazgos confirmados cuando el usuario lo autoriza."
 metadata:
   author: Andrés Vidal
-  version: 4.3.1
+  version: 4.4.0
   requires:
     env:
       - BITBUCKET_API_TOKEN
@@ -38,11 +38,15 @@ bash <skill>/scripts/fetch_pr_data.sh <workspace> <repo_slug> <pr_id> <outdir>
 python3 <skill>/scripts/review_context.py <outdir>
 ```
 
-Leer la salida compacta y `diff.patch`; `check_runs` nombra cada check de CI con su URL, para reportar qué validó el CI y qué no; los JSON originales quedan disponibles para consultas puntuales. No cargar también todos los originales. En PRs grandes, leer el diff por archivo, cubriendo primero el inventario completo de `files`.
+Leer la salida compacta y `diff.patch`; `check_runs` nombra cada check de CI con su URL, para reportar qué validó el CI y qué no; los hilos resueltos llegan recortados (`truncated`) y los JSON originales quedan disponibles para consultas puntuales. No cargar también todos los originales. En PRs grandes, leer el diff por archivo, cubriendo primero el inventario completo de `files`.
 
-No revisar PRs cerrados, merged, draft o de bots conocidos salvo pedido explícito.
+No revisar PRs cerrados, merge**Re-revisión.** `previous_review.commit` es la versión del PR que recibió el último comentario `(AI)` de la cuenta revisora; si es null (sin revisión previa o sin identidad de la cuenta), revisar el PR completo. Con revisión previa, una vez resuelto `repository_path` (sección 2):
 
-**Re-revisión.** `previous_review.commit` es la versión del PR que recibió el último comentario `(AI)` de la cuenta revisora; si es null (sin revisión previa o sin identidad de la cuenta), revisar el PR completo. Leer primero `git diff <previous_review.commit> <source.commit.hash>` y decidir con esa diferencia si cada comentario `(AI)` sin resolver sigue vigente; después comprobar que el resto del PR no cambió de contexto (un merge de destination puede cambiarlo). Si ese commit ya no existe (force push), revisar el PR completo. Los comentarios `(AI)` no prueban que la versión actual haya sido revisada.
+```bash
+python3 <skill>/scripts/review_delta.py <outdir> <repository_path>
+```
+
+`own_commits` es el cambio propio del PR desde la revisión previa: leer cada uno. En cada merge, `conflict_files` lista las resoluciones manuales, que pueden alterar el PR; el resto de un merge de destination solo cambia contexto. Cerrar cada hilo de `threads` contra el código de la versión actual: si está abierto, decidir si sigue vigente; si lo resolvió otra persona, confirmar que el defecto ya no existe, en especial con `path_touched_after: false`, porque la corrección pudo ir a otro archivo o no existir. Un hilo resuelto con el defecto vigente se responde con lo que falta y se reporta en el cierre. Si el commit previo ya no existe (force push), revisar el PR completo. Los comentarios `(AI)` no prueban que la versión actual haya sido revisada.` no prueban que la versión actual haya sido revisada.
 
 ## 2. Repositorio y tarea
 

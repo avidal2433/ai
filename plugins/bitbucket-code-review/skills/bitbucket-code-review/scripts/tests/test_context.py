@@ -16,6 +16,7 @@ import diff_line_map
 import history_context as history
 import removal_audit
 import review_context
+import review_delta
 
 
 class ContextTests(unittest.TestCase):
@@ -28,8 +29,7 @@ class ContextTests(unittest.TestCase):
             [{'id': 1, 'content': {'raw': body}, 'parent': {'id': 2}},
              {'id': 3, 'deleted': True}], [{'state': 'FAILED', 'name': 'tests'}])
         self.assertEqual(result['tasks'], ['abc123'])
-        self.assertEqual(result['comments'], [{'id': 1, 'parent': 2, 'inline': None,
-                                              'resolved': False, 'body': body}])
+        self.assertEqual(result['comments'], [{'id': 1, 'parent': 2, 'body': body}])
         self.assertIsNone(result['previous_review'])
         self.assertEqual(result['files'][0]['old_path'], 'old')
         self.assertNotIn('links', result)
@@ -53,6 +53,90 @@ class ContextTests(unittest.TestCase):
     def test_diff_content_cannot_replace_file_headers(self):
         diff = 'diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n--- value\n+++ value\n unchanged\n'
         self.assertEqual(diff_line_map.parse(diff), {'a.txt': {'to': [1], 'from': [1]}})
+
+
+class CommentResolutionTests(unittest.TestCase):
+    def summarize(self, comments):
+        return {c['id']: c for c in review_context.summarize({}, [], comments, [])['comments']}
+
+    def test_empty_resolution_from_listing_is_resolved_and_truncates_the_thread(self):
+        long = 'x' * (review_context.RESOLVED_BODY_CHARS + 50)
+        result = self.summarize([
+            {'id': 1, 'content': {'raw': long}, 'resolution': {}, 'inline': {'path': 'a.php', 'to': 3, 'from': None}},
+            {'id': 2, 'content': {'raw': long}, 'parent': {'id': 1}},
+            {'id': 3, 'content': {'raw': long}, 'resolution': None}])
+        self.assertTrue(result[1]['resolved'])
+        self.assertEqual(result[1]['inline'], {'path': 'a.php', 'to': 3})
+        self.assertTrue(result[1]['truncated'] and result[2]['truncated'])
+        self.assertNotIn('resolved', result[2])
+        self.assertFalse(result[3]['resolved'])
+        self.assertEqual(result[3]['body'], long)
+
+    def test_resolver_and_date(self):
+        result = self.summarize([{'id': 1, 'content': {'raw': 'a'}, 'resolution': {
+            'user': {'display_name': 'Autor'}, 'created_on': '2026-10-13T14:48:29+00:00'}}])
+        self.assertEqual((result[1]['resolved_by'], result[1]['resolved_on']),
+                         ('Autor', '2026-10-13T14:48:29+00:00'))
+
+
+class ReviewDeltaTests(unittest.TestCase):
+    def commit(self, repo, files, message, date):
+        for path, content in files.items():
+            Path(repo, path).write_text(content)
+        env = {**os.environ, 'GIT_COMMITTER_DATE': date, 'GIT_AUTHOR_DATE': date}
+        subprocess.run(['git', '-C', repo, 'add', '.'], check=True)
+        subprocess.run(['git', '-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', message],
+                       check=True, env=env)
+        return self.rev(repo, 'HEAD')
+
+    def rev(self, repo, ref):
+        return subprocess.run(['git', '-C', repo, 'rev-parse', ref], check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def ai(self, cid, path, created_on, resolution=None):
+        return {'id': cid, 'content': {'raw': '(AI) x'}, 'created_on': created_on,
+                'user': {'account_id': 'reviewer'}, 'resolution': resolution,
+                'inline': {'path': path, 'to': 1} if path else None}
+
+    def test_own_commits_merge_conflicts_and_threads_to_recheck(self):
+        with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as out:
+            git = lambda *a: subprocess.run(['git', '-C', repo, *a], check=True, capture_output=True)
+            git('init', '-q', '-b', 'main')
+            self.commit(repo, {'c.txt': 'base\n'}, 'base', '2026-10-01T10:00:00+00:00')
+            git('checkout', '-q', '-b', 'feature')
+            reviewed = self.commit(repo, {'f.txt': 'a\n', 'c.txt': 'feature\n'}, 'a', '2026-10-02T10:00:00+00:00')
+            git('checkout', '-q', 'main')
+            destination = self.commit(repo, {'c.txt': 'main\n'}, 'main', '2026-10-03T10:00:00+00:00')
+            git('checkout', '-q', 'feature')
+            subprocess.run(['git', '-C', repo, 'merge', '-q', 'main'], capture_output=True)
+            Path(repo, 'c.txt').write_text('resolved\n')
+            self.commit(repo, {}, 'merge main', '2026-10-04T10:00:00+00:00')
+            source = self.commit(repo, {'g.txt': 'b\n'}, 'b', '2026-10-05T10:00:00+00:00')
+            other = {'user': {'account_id': 'author', 'display_name': 'Autor'}}
+            comments = [
+                self.ai(1, 'f.txt', '2026-10-02T12:00:00+00:00', {**other, 'created_on': '2026-10-03T09:00:00+00:00'}),
+                self.ai(2, 'g.txt', '2026-10-02T12:00:00+00:00'),
+                self.ai(3, 'f.txt', '2026-10-02T11:00:00+00:00', {**other, 'created_on': '2026-10-02T11:30:00+00:00'}),
+                self.ai(4, 'f.txt', '2026-10-02T12:00:00+00:00', {'user': {'account_id': 'reviewer'},
+                                                                   'created_on': '2026-10-03T09:00:00+00:00'}),
+                {'id': 5, 'content': {'raw': 'ok'}, 'parent': {'id': 1}, 'created_on': '2026-10-03T08:00:00+00:00',
+                 'user': {'display_name': 'Autor'}}]
+            Path(out, 'review_context.json').write_text(json.dumps({
+                'source': {'commit': source[:12]}, 'destination': {'commit': destination[:12]},
+                'previous_review': {'commit': reviewed[:12], 'reviewed_at': '2026-10-02T12:00:00+00:00'}}))
+            Path(out, 'comments.json').write_text(json.dumps(comments))
+            with mock.patch.dict(os.environ, {'BITBUCKET_ACCOUNT_ID': 'reviewer'}):
+                result = review_delta.delta(Path(out), Path(repo))
+        self.assertEqual([(c['subject'], c['files']) for c in result['own_commits']], [('b', ['g.txt'])])
+        self.assertEqual([(m['subject'], m['conflict_files']) for m in result['merges']],
+                         [('merge main', ['c.txt'])])
+        self.assertEqual([(t['id'], t['resolved'], t['replies'], t['path_touched_after']) for t in result['threads']],
+                         [(1, True, 1, False), (2, False, 0, True)])
+
+    def test_without_previous_review_covers_the_whole_pr(self):
+        with tempfile.TemporaryDirectory() as out:
+            Path(out, 'review_context.json').write_text(json.dumps({'previous_review': None}))
+            self.assertEqual(review_delta.delta(Path(out), Path(out)), {'previous_review': None})
 
 
 class PreviousReviewTests(unittest.TestCase):

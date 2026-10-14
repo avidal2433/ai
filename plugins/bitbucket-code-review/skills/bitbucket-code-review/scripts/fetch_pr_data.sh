@@ -10,7 +10,8 @@
 #   diff.patch     — diff unificado completo
 #   diffstat.json  — array con stats por archivo (para priorizar PRs grandes)
 #   commits.json   — array de commits
-#   comments.json  — array de comentarios existentes (sin eliminados)
+#   comments.json  — array de comentarios existentes (sin eliminados); resolution es null
+#                    si el hilo sigue abierto y trae quién lo resolvió y cuándo
 #   statuses.json  — array de CI/checks del commit origen
 #   activity.json  — array de actividad (pushes y comentarios); fecha cada versión revisada
 #   user.json      — cuenta dueña del token, si el token puede leerla (opcional)
@@ -63,7 +64,9 @@ SRC_COMMIT="$(jq -r '.source.commit.hash' "${OUT}/pr.json")"
 api_get         "${BASE}/pullrequests/${PR}/diff"                    "${OUT}/diff.patch"    & P1=$!
 fetch_paginated "${BASE}/pullrequests/${PR}/diffstat?pagelen=100"    "${OUT}/diffstat.json" & P2=$!
 fetch_paginated "${BASE}/pullrequests/${PR}/commits?pagelen=100"     "${OUT}/commits.json"  & P3=$!
-fetch_paginated "${BASE}/pullrequests/${PR}/comments?pagelen=100"    "${OUT}/comments.json" & P4=$!
+# Sin fields, el listado devuelve resolution como {} y oculta quién resolvió y cuándo.
+COMMENT_FIELDS="%2Bvalues.resolution.user.display_name,%2Bvalues.resolution.user.account_id,%2Bvalues.resolution.user.uuid,%2Bvalues.resolution.created_on"
+fetch_paginated "${BASE}/pullrequests/${PR}/comments?pagelen=100&fields=${COMMENT_FIELDS}" "${OUT}/comments.json" & P4=$!
 fetch_paginated "${BASE}/commit/${SRC_COMMIT}/statuses?pagelen=100"  "${OUT}/statuses.json" & P5=$!
 fetch_paginated "${BASE}/pullrequests/${PR}/activity?pagelen=50"     "${OUT}/activity.json" & P6=$!
 
