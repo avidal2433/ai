@@ -11,6 +11,9 @@ cuentan los comentarios de esa cuenta (BITBUCKET_ACCOUNT_ID o user.json); sin id
 sin revisión previa o sin actividad devuelve null y la re-revisión cubre el PR completo.
 reviewer_state: estado de esa cuenta entre los participantes del PR ("approved",
 "changes_requested" o null); null también sin identidad o si no participa.
+changes_requested_by_ai: true si esa solicitud de cambios la puso una revisión (AI). Bitbucket
+no registra quién la pidió: cuenta como de la IA solo si un comentario de la cuenta que empieza
+con CHANGES_MARK se publicó a menos de MARK_WINDOW_SECONDS de su último evento changes_requested.
 """
 import os
 import json
@@ -22,6 +25,8 @@ from pathlib import Path
 from semantic_release_check import extract_tasks
 
 RESOLVED_BODY_CHARS = 200
+CHANGES_MARK = '(AI) Cambios solicitados'
+MARK_WINDOW_SECONDS = 120
 
 
 def revision(value):
@@ -70,6 +75,18 @@ def reviewer_state(participants, reviewer):
     return next((p.get('state') for p in participants or [] if authored_by(p, reviewer)), None)
 
 
+def changes_requested_by_ai(activity, comments, reviewer):
+    events = [e['date'] for e in (a.get('changes_requested') for a in activity)
+              if e and e.get('date') and authored_by(e, reviewer)]
+    if not events:
+        return False
+    requested_at = _when(max(events, key=_when))
+    return any(abs((_when(c['created_on']) - requested_at).total_seconds()) <= MARK_WINDOW_SECONDS
+               for c in comments
+               if not c.get('deleted') and c.get('created_on') and authored_by(c, reviewer)
+               and (c.get('content') or {}).get('raw', '').startswith(CHANGES_MARK))
+
+
 def thread_root(comment, by_id):
     seen = set()
     while (comment.get('parent') or {}).get('id') in by_id and comment['id'] not in seen:
@@ -116,6 +133,8 @@ def summarize(pr, stats, comments, statuses, activity=None, reviewer=None):
         'comments': [compact_comment(c, by_id) for c in live],
         'previous_review': previous_review(comments, activity or [], reviewer),
         'reviewer_state': reviewer_state(pr.get('participants'), reviewer),
+        'changes_requested_by_ai': reviewer_state(pr.get('participants'), reviewer) == 'changes_requested'
+                                   and changes_requested_by_ai(activity or [], comments, reviewer),
         'checks': dict(Counter(s.get('state', 'UNKNOWN') for s in statuses)),
         'check_runs': [{'name': s.get('name'), 'state': s.get('state'), 'url': s.get('url')}
                        for s in statuses],

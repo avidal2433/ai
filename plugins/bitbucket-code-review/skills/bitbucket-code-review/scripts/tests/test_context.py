@@ -184,6 +184,44 @@ class ReviewerStateTests(unittest.TestCase):
         self.assertIsNone(review_context.reviewer_state(None, 'reviewer'))
 
 
+class ChangesRequestedByAiTests(unittest.TestCase):
+    PARTICIPANTS = [{'user': {'account_id': 'reviewer'}, 'state': 'changes_requested'}]
+
+    def event(self, date, author='reviewer'):
+        return {'changes_requested': {'date': date, 'user': {'account_id': author}}}
+
+    def comment(self, raw, created_on, author='reviewer'):
+        return {'id': 1, 'content': {'raw': raw}, 'created_on': created_on, 'user': {'account_id': author}}
+
+    def by_ai(self, activity, comments, participants=None):
+        return review_context.summarize({'participants': participants or self.PARTICIPANTS}, [], comments, [],
+                                        activity, 'reviewer')['changes_requested_by_ai']
+
+    def test_marker_published_with_the_request(self):
+        self.assertTrue(self.by_ai([self.event('2026-10-21T20:25:46+00:00')],
+                                   [self.comment(review_context.CHANGES_MARK + ' x', '2026-10-21T20:25:48Z')]))
+
+    def test_request_set_by_hand_minutes_after_an_ai_review(self):
+        self.assertFalse(self.by_ai([self.event('2026-10-20T17:41:27+00:00')],
+                                    [self.comment('(AI) hallazgo', '2026-10-20T17:33:04+00:00')]))
+
+    def test_latest_request_decides(self):
+        self.assertFalse(self.by_ai([self.event('2026-10-14T21:56:24+00:00'), self.event('2026-10-20T17:41:27+00:00')],
+                                    [self.comment(review_context.CHANGES_MARK, '2026-10-14T21:56:25+00:00')]))
+
+    def test_needs_a_current_request_and_identity(self):
+        activity = [self.event('2026-10-21T20:25:46+00:00')]
+        comments = [self.comment(review_context.CHANGES_MARK, '2026-10-21T20:25:48+00:00')]
+        self.assertFalse(self.by_ai(activity, comments, [{'user': {'account_id': 'reviewer'}, 'state': None}]))
+        self.assertFalse(review_context.changes_requested_by_ai(activity, comments, None))
+
+    def test_marker_is_not_a_thread_to_recheck(self):
+        comments = [self.comment(review_context.CHANGES_MARK, '2026-10-21T20:25:48+00:00'),
+                    {**self.comment('(AI) hallazgo', '2026-10-21T20:25:40+00:00'), 'id': 2}]
+        result = review_delta.threads(comments, 'reviewer', [], '2026-10-21T20:00:00+00:00')
+        self.assertEqual([t['id'] for t in result], [2])
+
+
 class HistoryTests(unittest.TestCase):
     def test_destination_is_not_assumed_to_be_diff_base(self):
         with tempfile.TemporaryDirectory() as directory:

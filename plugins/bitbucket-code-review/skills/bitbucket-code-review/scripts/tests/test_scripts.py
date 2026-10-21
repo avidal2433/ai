@@ -246,27 +246,68 @@ class ThreadTests(unittest.TestCase):
 
 
 class ReviewStateTests(unittest.TestCase):
-    PR = f"{bc.API}/repositories/ws/repo/pullrequests/7/request-changes"
+    PR = f"{bc.API}/repositories/ws/repo/pullrequests/7"
+    REQUESTED = {"participants": [{"user": {"account_id": "me"}, "state": "changes_requested"}]}
+    EVENT = {"values": [{"changes_requested": {"date": "2026-10-21T20:25:46+00:00", "user": {"account_id": "me"}}}]}
 
     def pub(self, *script):
         t = FakeTransport(*script)
         return bc.Publisher("ws", "repo", 7, transport=t, auth="x"), t
 
-    def test_requests_changes_on_the_pull_request(self):
-        pub, t = self.pub({"state": "changes_requested"})
-        self.assertEqual(bc.set_review_state(pub, withdraw=False), (True, "changes_requested", None))
-        self.assertEqual(t.calls, [("POST", self.PR, None)])
+    def marker(self, created_on="2026-10-21T20:25:48+00:00", author="me"):
+        return {"values": [{"content": {"raw": bc.CHANGES_BODY}, "created_on": created_on,
+                            "user": {"account_id": author}}]}
 
-    def test_withdraw_removes_the_request(self):
-        pub, t = self.pub(None)
-        self.assertEqual(bc.set_review_state(pub, withdraw=True), (True, "withdrawn", None))
-        self.assertEqual(t.calls, [("DELETE", self.PR, None)])
+    def test_request_posts_the_marker_after_requesting(self):
+        pub, t = self.pub({"state": "changes_requested"}, {"id": 9})
+        self.assertEqual(bc.request_changes(pub), {"ok": True, "status": "changes_requested", "marker": 9, "error": None})
+        self.assertEqual([c[:2] for c in t.calls], [("POST", f"{self.PR}/request-changes"), ("POST", f"{self.PR}/comments")])
+        self.assertTrue(t.calls[1][2]["content"]["raw"].startswith(bc.CHANGES_MARK))
 
-    def test_api_error_is_reported_not_raised(self):
-        pub, _ = self.pub(bc.BitbucketError(400, "merged"))
-        ok, status, err = bc.set_review_state(pub, withdraw=False)
-        self.assertEqual((ok, status), (False, "failed"))
-        self.assertIn("HTTP 400", err)
+    def test_failed_request_posts_no_marker(self):
+        pub, t = self.pub(bc.BitbucketError(400, "merged"))
+        result = bc.request_changes(pub)
+        self.assertEqual((result["ok"], result["status"]), (False, "failed"))
+        self.assertEqual(len(t.calls), 1)
+
+    def test_request_without_marker_is_reported(self):
+        pub, _ = self.pub({"state": "changes_requested"}, bc.BitbucketError(401, "nope"))
+        result = bc.request_changes(pub)
+        self.assertEqual((result["ok"], result["marker"]), (True, None))
+        self.assertIn("no se retirará sola", result["error"])
+
+    def test_withdraws_a_request_with_its_marker(self):
+        pub, t = self.pub(self.REQUESTED, self.EVENT, self.marker(), None)
+        self.assertEqual(bc.withdraw_changes(pub, "me")["status"], "withdrawn")
+        self.assertEqual(t.calls[-1][:2], ("DELETE", f"{self.PR}/request-changes"))
+
+    def test_keeps_a_request_set_by_hand_after_an_ai_review(self):
+        ai_comment = {"values": [{"content": {"raw": "(AI) hallazgo"}, "created_on": "2026-10-21T20:20:00+00:00",
+                                  "user": {"account_id": "me"}}]}
+        pub, t = self.pub(self.REQUESTED, self.EVENT, ai_comment, None)
+        self.assertEqual(bc.withdraw_changes(pub, "me")["status"], "skipped")
+        self.assertNotIn("DELETE", [c[0] for c in t.calls])
+
+    def test_keeps_a_later_manual_request_despite_an_old_marker(self):
+        pub, t = self.pub(self.REQUESTED, self.EVENT, self.marker("2026-10-20T10:00:00+00:00"), None)
+        self.assertEqual(bc.withdraw_changes(pub, "me")["status"], "skipped")
+        self.assertNotIn("DELETE", [c[0] for c in t.calls])
+
+    def test_marker_from_another_account_does_not_count(self):
+        pub, t = self.pub(self.REQUESTED, self.EVENT, self.marker(author="someone"), None)
+        self.assertEqual(bc.withdraw_changes(pub, "me")["status"], "skipped")
+        self.assertNotIn("DELETE", [c[0] for c in t.calls])
+
+    def test_nothing_to_withdraw_without_a_current_request(self):
+        pub, t = self.pub({"participants": [{"user": {"account_id": "me"}, "state": None}]})
+        self.assertEqual(bc.withdraw_changes(pub, "me")["status"], "skipped")
+        self.assertEqual(len(t.calls), 1)
+
+    def test_withdraw_cli_refuses_without_reviewer_identity(self):
+        with mock.patch.dict(os.environ, {"BITBUCKET_EMAIL": "e", "BITBUCKET_API_TOKEN": "t"}, clear=True), \
+             mock.patch.object(bc, "reviewer_identity", return_value=None), \
+             mock.patch("sys.stderr"):
+            self.assertEqual(bc.main(["x", "request-changes", "ws", "repo", "7", "--withdraw"]), 2)
 
 
 class TransportTests(unittest.TestCase):
