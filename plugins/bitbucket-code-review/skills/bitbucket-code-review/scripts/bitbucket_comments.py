@@ -35,9 +35,12 @@ comentario raíz empieza con "(AI)" y fue publicado por la cuenta revisora
 (BITBUCKET_ACCOUNT_ID o, si el token lo permite, GET /user); sin esa identidad no
 resuelve nada. Un hilo ya resuelto cuenta como ok. Salida: una línea JSON por comment_id {"id", "ok", "status", "error"}.
 
-request-changes deja a la cuenta del token en "changes requested" sobre el PR; con
---withdraw retira esa solicitud. Salida: una línea JSON {"ok", "status", "error"}
-con status "changes_requested", "withdrawn" o "failed".
+request-changes deja a la cuenta del token en "changes requested" sobre el PR y publica el
+comentario de marca (CHANGES_MARK) que la identifica como de una revisión (AI); sin esa marca
+no se retirará sola. Con --withdraw solo retira una solicitud vigente que tenga su marca
+(review_context.changes_requested_by_ai); una puesta a mano devuelve "skipped". Necesita la
+misma identidad que resolve. Salida: una línea JSON {"ok", "status", "marker", "error"} con
+status "changes_requested", "withdrawn", "skipped" o "failed".
 
 Exit: 0 todo publicado · 1 alguna entrada falló · 2 error de uso.
 """
@@ -52,10 +55,13 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diff_line_map  # noqa: E402  (mismo directorio)
+from review_context import CHANGES_MARK, changes_requested_by_ai, reviewer_state  # noqa: E402
 
 API = "https://api.bitbucket.org/2.0"
 AI_PREFIX = "(AI)"
 FALLBACK_TAG = "[No inline por mapeo de diff: {path}:{line}]"
+CHANGES_BODY = (f"{CHANGES_MARK} por los hallazgos (AI) pendientes de esta revisión. La solicitud se "
+                "retira cuando una revisión posterior confirme que están corregidos.")
 
 
 class BitbucketError(Exception):
@@ -125,6 +131,17 @@ class Publisher:
 
     def resolve(self, comment_id):
         return self._call("POST", f"{self.base}/{comment_id}/resolve")[1]
+
+    def list_all(self, url):
+        items = []
+        while url:
+            page = self._call("GET", url)[1] or {}
+            items.extend(page.get("values", []))
+            url = page.get("next")
+        return items
+
+    def get_pr(self):
+        return self._call("GET", self.pr)[1] or {}
 
     def request_changes(self):
         return self._call("POST", f"{self.pr}/request-changes")[1]
@@ -317,23 +334,51 @@ def cmd_resolve(args):
     return 0 if failed == 0 else 1
 
 
-def set_review_state(pub, withdraw):
-    """Solicita o retira cambios como la cuenta del token. Devuelve (ok, status, error)."""
+def request_changes(pub):
+    """Solicita cambios y publica la marca que permite retirarlos después."""
     try:
-        if withdraw:
-            pub.withdraw_changes()
-            return True, "withdrawn", None
         pub.request_changes()
-        return True, "changes_requested", None
     except BitbucketError as e:
-        return False, "failed", str(e)
+        return {"ok": False, "status": "failed", "marker": None, "error": str(e)}
+    try:
+        marker = (pub.post_global(CHANGES_BODY) or {}).get("id")
+    except BitbucketError as e:
+        return {"ok": True, "status": "changes_requested", "marker": None,
+                "error": f"sin comentario de marca; la solicitud no se retirará sola: {e}"}
+    return {"ok": True, "status": "changes_requested", "marker": marker, "error": None}
+
+
+def withdraw_changes(pub, reviewer):
+    """Retira la solicitud de cambios vigente solo si la puso una revisión (AI)."""
+    try:
+        if reviewer_state(pub.get_pr().get("participants"), reviewer) != "changes_requested":
+            return {"ok": False, "status": "skipped", "marker": None,
+                    "error": "la cuenta revisora no tiene una solicitud de cambios vigente"}
+        activity = pub.list_all(f"{pub.pr}/activity?pagelen=50")
+        comments = pub.list_all(f"{pub.base}?pagelen=100")
+        if not changes_requested_by_ai(activity, comments, reviewer):
+            return {"ok": False, "status": "skipped", "marker": None,
+                    "error": "la solicitud de cambios no la puso una revisión (AI)"}
+        pub.withdraw_changes()
+        return {"ok": True, "status": "withdrawn", "marker": None, "error": None}
+    except BitbucketError as e:
+        return {"ok": False, "status": "failed", "marker": None, "error": str(e)}
 
 
 def cmd_request_changes(args):
-    pub = Publisher(args.workspace, args.repo_slug, args.pr_id, auth=auth_header())
-    ok, status, err = set_review_state(pub, args.withdraw)
-    print(json.dumps({"ok": ok, "status": status, "error": err}, ensure_ascii=False))
-    return 0 if ok else 1
+    auth = auth_header()
+    pub = Publisher(args.workspace, args.repo_slug, args.pr_id, auth=auth)
+    if args.withdraw:
+        reviewer = reviewer_identity(auth)
+        if not reviewer:
+            print("ERROR: no se pudo identificar la cuenta revisora; define BITBUCKET_ACCOUNT_ID "
+                  "(account_id de Bitbucket del dueño del token)", file=sys.stderr)
+            return 2
+        result = withdraw_changes(pub, reviewer)
+    else:
+        result = request_changes(pub)
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if result["ok"] else 1
 
 
 def main(argv):

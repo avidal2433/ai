@@ -67,7 +67,7 @@ Ask the agent to review a pull request, for example:
 Revisa este PR https://bitbucket.org/<workspace>/<repo>/pull-requests/123
 ```
 
-When you authorize publishing, the skill posts its findings and then requests changes on the pull request. On a later review it withdraws that request once every finding is fixed. It never approves, declines or merges pull requests.
+When you authorize publishing, the skill posts its findings and then requests changes on the pull request. On a later review it withdraws that request once every finding is fixed, but only if the skill made it: a change request or approval you set by hand stays in place. It never approves, declines or merges pull requests.
 
 ## Adding a plugin
 

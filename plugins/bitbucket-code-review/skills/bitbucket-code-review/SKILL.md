@@ -3,7 +3,7 @@ name: bitbucket-code-review
 description: "Revisión técnica de un PR de Bitbucket con contexto del repositorio y de ClickUp cuando esté enlazado. Usar ante una solicitud explícita de revisar un PR (URL o número); no ante preguntas sobre la skill o URLs sin solicitud de revisión. Publica hallazgos confirmados y solicita cambios en el PR cuando el usuario lo autoriza."
 metadata:
   author: Andrés Vidal
-  version: 4.5.1
+  version: 4.6.0
   requires:
     env:
       - BITBUCKET_API_TOKEN
@@ -130,9 +130,9 @@ python3 <skill>/scripts/bitbucket_comments.py reply <workspace> <repo_slug> <pr_
 
 **Solicitar cambios.** Con la misma autorización de publicar, después de los comentarios, respuestas y hilos resueltos, fijar el estado de la cuenta revisora en el PR. Un defecto queda pendiente si se publicó en esta revisión o si su hilo `(AI)` sigue vigente.
 
-- Con al menos un defecto pendiente, solicitar cambios, salvo que `reviewer_state` ya sea `changes_requested`.
-- Sin defectos pendientes y con `reviewer_state` en `changes_requested`, retirar la solicitud con `--withdraw`.
-- Con `reviewer_state` en `approved`, no cambiarlo: una aprobación es una decisión humana. Reportar el conflicto en el cierre.
+- Con al menos un defecto pendiente, solicitar cambios, salvo que `reviewer_state` ya sea `changes_requested`. El script publica además un comentario `(AI) Cambios solicitados…` que marca la solicitud como de la revisión; sin él (`marker: null`), la solicitud no se retirará sola.
+- Sin defectos pendientes, retirar la solicitud con `--withdraw` solo si `changes_requested_by_ai` es true.
+- Bitbucket no registra quién solicitó los cambios. Una solicitud sin esa marca (`reviewer_state` en `changes_requested` y `changes_requested_by_ai` en false) la puso una persona, y lo mismo vale para una aprobación (`approved`): no cambiarlas y reportar el conflicto en el cierre. `--withdraw` también lo comprueba y devuelve `skipped`.
 
 ```bash
 python3 <skill>/scripts/bitbucket_comments.py request-changes <workspace> <repo_slug> <pr_id> [--withdraw]
