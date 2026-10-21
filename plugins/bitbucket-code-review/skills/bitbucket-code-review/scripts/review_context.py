@@ -9,6 +9,8 @@ previous_review: commit origen del PR cuando la cuenta revisora publicó su últ
 comentario (AI), según activity.json. Cualquiera puede escribir "(AI)", así que solo
 cuentan los comentarios de esa cuenta (BITBUCKET_ACCOUNT_ID o user.json); sin identidad,
 sin revisión previa o sin actividad devuelve null y la re-revisión cubre el PR completo.
+reviewer_state: estado de esa cuenta entre los participantes del PR ("approved",
+"changes_requested" o null); null también sin identidad o si no participa.
 """
 import os
 import json
@@ -64,6 +66,10 @@ def previous_review(comments, activity, reviewer=None):
     return {'commit': max(before, key=lambda p: _when(p[0]))[1], 'reviewed_at': reviewed_at}
 
 
+def reviewer_state(participants, reviewer):
+    return next((p.get('state') for p in participants or [] if authored_by(p, reviewer)), None)
+
+
 def thread_root(comment, by_id):
     seen = set()
     while (comment.get('parent') or {}).get('id') in by_id and comment['id'] not in seen:
@@ -109,6 +115,7 @@ def summarize(pr, stats, comments, statuses, activity=None, reviewer=None):
                    'added': s.get('lines_added', 0), 'removed': s.get('lines_removed', 0)} for s in stats],
         'comments': [compact_comment(c, by_id) for c in live],
         'previous_review': previous_review(comments, activity or [], reviewer),
+        'reviewer_state': reviewer_state(pr.get('participants'), reviewer),
         'checks': dict(Counter(s.get('state', 'UNKNOWN') for s in statuses)),
         'check_runs': [{'name': s.get('name'), 'state': s.get('state'), 'url': s.get('url')}
                        for s in statuses],

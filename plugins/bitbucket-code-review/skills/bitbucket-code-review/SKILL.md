@@ -1,9 +1,9 @@
 ---
 name: bitbucket-code-review
-description: "Revisión técnica de un PR de Bitbucket con contexto del repositorio y de ClickUp cuando esté enlazado. Usar ante una solicitud explícita de revisar un PR (URL o número); no ante preguntas sobre la skill o URLs sin solicitud de revisión. Publica hallazgos confirmados cuando el usuario lo autoriza."
+description: "Revisión técnica de un PR de Bitbucket con contexto del repositorio y de ClickUp cuando esté enlazado. Usar ante una solicitud explícita de revisar un PR (URL o número); no ante preguntas sobre la skill o URLs sin solicitud de revisión. Publica hallazgos confirmados y solicita cambios en el PR cuando el usuario lo autoriza."
 metadata:
   author: Andrés Vidal
-  version: 4.4.0
+  version: 4.5.0
   requires:
     env:
       - BITBUCKET_API_TOKEN
@@ -25,7 +25,7 @@ metadata:
 
 # Bitbucket Code Review
 
-Revisar con criterio de senior lead: encontrar defectos introducidos por el PR, demostrar su consecuencia y proponer una acción concreta. Aplicar la visión solicitada por el usuario; si no especifica una, priorizar corrección, seguridad, regresiones y pruebas relevantes. No aprobar, rechazar ni hacer merge.
+Revisar con criterio de senior lead: encontrar defectos introducidos por el PR, demostrar su consecuencia y proponer una acción concreta. Aplicar la visión solicitada por el usuario; si no especifica una, priorizar corrección, seguridad, regresiones y pruebas relevantes. No aprobar, declinar ni hacer merge; la única acción sobre el estado del PR es solicitar cambios o retirar esa solicitud (sección 5).
 
 ## 1. Preparar el contexto
 
@@ -40,13 +40,15 @@ python3 <skill>/scripts/review_context.py <outdir>
 
 Leer la salida compacta y `diff.patch`; `check_runs` nombra cada check de CI con su URL, para reportar qué validó el CI y qué no; los hilos resueltos llegan recortados (`truncated`) y los JSON originales quedan disponibles para consultas puntuales. No cargar también todos los originales. En PRs grandes, leer el diff por archivo, cubriendo primero el inventario completo de `files`.
 
-No revisar PRs cerrados, merge**Re-revisión.** `previous_review.commit` es la versión del PR que recibió el último comentario `(AI)` de la cuenta revisora; si es null (sin revisión previa o sin identidad de la cuenta), revisar el PR completo. Con revisión previa, una vez resuelto `repository_path` (sección 2):
+No revisar PRs cerrados, merged, draft o de bots conocidos salvo pedido explícito.
+
+**Re-revisión.** `previous_review.commit` es la versión del PR que recibió el último comentario `(AI)` de la cuenta revisora; si es null (sin revisión previa o sin identidad de la cuenta), revisar el PR completo. Con revisión previa, una vez resuelto `repository_path` (sección 2):
 
 ```bash
 python3 <skill>/scripts/review_delta.py <outdir> <repository_path>
 ```
 
-`own_commits` es el cambio propio del PR desde la revisión previa: leer cada uno. En cada merge, `conflict_files` lista las resoluciones manuales, que pueden alterar el PR; el resto de un merge de destination solo cambia contexto. Cerrar cada hilo de `threads` contra el código de la versión actual: si está abierto, decidir si sigue vigente; si lo resolvió otra persona, confirmar que el defecto ya no existe, en especial con `path_touched_after: false`, porque la corrección pudo ir a otro archivo o no existir. Un hilo resuelto con el defecto vigente se responde con lo que falta y se reporta en el cierre. Si el commit previo ya no existe (force push), revisar el PR completo. Los comentarios `(AI)` no prueban que la versión actual haya sido revisada.` no prueban que la versión actual haya sido revisada.
+`own_commits` es el cambio propio del PR desde la revisión previa: leer cada uno. En cada merge, `conflict_files` lista las resoluciones manuales, que pueden alterar el PR; el resto de un merge de destination solo cambia contexto. Cerrar cada hilo de `threads` contra el código de la versión actual: si está abierto, decidir si sigue vigente; si lo resolvió otra persona, confirmar que el defecto ya no existe, en especial con `path_touched_after: false`, porque la corrección pudo ir a otro archivo o no existir. Un hilo resuelto con el defecto vigente se responde con lo que falta y se reporta en el cierre. Si el commit previo ya no existe (force push), revisar el PR completo. Los comentarios `(AI)` no prueban que la versión actual haya sido revisada.
 
 ## 2. Repositorio y tarea
 
@@ -126,4 +128,16 @@ python3 <skill>/scripts/bitbucket_comments.py reply <workspace> <repo_slug> <pr_
 
 `resolve` solo actúa sobre comentarios raíz `(AI)` de la cuenta revisora; devuelve `skipped` para los demás.
 
-Responder brevemente con enlace del PR, cobertura, versión del código revisada, contexto ClickUp/historia utilizado u omitido, CI, hallazgos confirmados, comentarios publicados (inline/global) e hilos resueltos. Explicar limitaciones y candidatos pendientes con motivo. Si no hay hallazgos publicables, decirlo sin inventar comentarios para justificar el trabajo. No volcar el análisis completo salvo que se solicite.
+**Solicitar cambios.** Con la misma autorización de publicar, después de los comentarios, respuestas y hilos resueltos, fijar el estado de la cuenta revisora en el PR. Un defecto queda pendiente si se publicó en esta revisión o si su hilo `(AI)` sigue vigente.
+
+- Con al menos un defecto pendiente, solicitar cambios, salvo que `reviewer_state` ya sea `changes_requested`.
+- Sin defectos pendientes y con `reviewer_state` en `changes_requested`, retirar la solicitud con `--withdraw`.
+- Con `reviewer_state` en `approved`, no cambiarlo: una aprobación es una decisión humana. Reportar el conflicto en el cierre.
+
+```bash
+python3 <skill>/scripts/bitbucket_comments.py request-changes <workspace> <repo_slug> <pr_id> [--withdraw]
+```
+
+Si la API falla, los comentarios publicados siguen siendo válidos: reportar el error en el cierre sin reintentar el lote.
+
+Responder brevemente con enlace del PR, cobertura, versión del código revisada, contexto ClickUp/historia utilizado u omitido, CI, hallazgos confirmados, comentarios publicados (inline/global), hilos resueltos y estado de la solicitud de cambios. Explicar limitaciones y candidatos pendientes con motivo. Si no hay hallazgos publicables, decirlo sin inventar comentarios para justificar el trabajo. No volcar el análisis completo salvo que se solicite.

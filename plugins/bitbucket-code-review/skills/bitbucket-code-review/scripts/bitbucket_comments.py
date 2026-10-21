@@ -7,6 +7,7 @@ Uso:
   python3 bitbucket_comments.py global  <workspace> <repo_slug> <pr_id> (--body-file <archivo> | --body "<texto>")
   python3 bitbucket_comments.py reply   <workspace> <repo_slug> <pr_id> <comment_id> (--body-file <archivo> | --body "<texto>")
   python3 bitbucket_comments.py resolve <workspace> <repo_slug> <pr_id> <comment_id> [<comment_id> ...]
+  python3 bitbucket_comments.py request-changes <workspace> <repo_slug> <pr_id> [--withdraw]
 
 Requiere: BITBUCKET_EMAIL, BITBUCKET_API_TOKEN (App Password).
 
@@ -33,6 +34,10 @@ reply responde dentro del hilo de un comentario. resolve solo resuelve hilos cuy
 comentario raíz empieza con "(AI)" y fue publicado por la cuenta revisora
 (BITBUCKET_ACCOUNT_ID o, si el token lo permite, GET /user); sin esa identidad no
 resuelve nada. Un hilo ya resuelto cuenta como ok. Salida: una línea JSON por comment_id {"id", "ok", "status", "error"}.
+
+request-changes deja a la cuenta del token en "changes requested" sobre el PR; con
+--withdraw retira esa solicitud. Salida: una línea JSON {"ok", "status", "error"}
+con status "changes_requested", "withdrawn" o "failed".
 
 Exit: 0 todo publicado · 1 alguna entrada falló · 2 error de uso.
 """
@@ -89,7 +94,8 @@ def request(method, url, payload=None, auth=None):
 
 class Publisher:
     def __init__(self, ws, repo, pr_id, transport=None, auth=None):
-        self.base = f"{API}/repositories/{ws}/{repo}/pullrequests/{pr_id}/comments"
+        self.pr = f"{API}/repositories/{ws}/{repo}/pullrequests/{pr_id}"
+        self.base = f"{self.pr}/comments"
         self.transport = transport or request
         self.auth = auth
 
@@ -118,6 +124,12 @@ class Publisher:
 
     def resolve(self, comment_id):
         return self._call("POST", f"{self.base}/{comment_id}/resolve")[1]
+
+    def request_changes(self):
+        return self._call("POST", f"{self.pr}/request-changes")[1]
+
+    def withdraw_changes(self):
+        return self._call("DELETE", f"{self.pr}/request-changes")[1]
 
     def delete(self, comment_id):
         """Best-effort: se usa para retirar un inline que la API ubicó en otra línea."""
@@ -304,6 +316,25 @@ def cmd_resolve(args):
     return 0 if failed == 0 else 1
 
 
+def set_review_state(pub, withdraw):
+    """Solicita o retira cambios como la cuenta del token. Devuelve (ok, status, error)."""
+    try:
+        if withdraw:
+            pub.withdraw_changes()
+            return True, "withdrawn", None
+        pub.request_changes()
+        return True, "changes_requested", None
+    except BitbucketError as e:
+        return False, "failed", str(e)
+
+
+def cmd_request_changes(args):
+    pub = Publisher(args.workspace, args.repo_slug, args.pr_id, auth=auth_header())
+    ok, status, err = set_review_state(pub, args.withdraw)
+    print(json.dumps({"ok": ok, "status": status, "error": err}, ensure_ascii=False))
+    return 0 if ok else 1
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -333,6 +364,11 @@ def main(argv):
     v.add_argument("workspace"); v.add_argument("repo_slug"); v.add_argument("pr_id", type=int)
     v.add_argument("comment_ids", type=int, nargs="+")
     v.set_defaults(func=cmd_resolve)
+
+    c = sub.add_parser("request-changes", help="solicita cambios en el PR o, con --withdraw, retira la solicitud")
+    c.add_argument("workspace"); c.add_argument("repo_slug"); c.add_argument("pr_id", type=int)
+    c.add_argument("--withdraw", action="store_true")
+    c.set_defaults(func=cmd_request_changes)
 
     args = ap.parse_args(argv[1:])
     return args.func(args)

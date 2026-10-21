@@ -170,6 +170,20 @@ class PreviousReviewTests(unittest.TestCase):
         self.assertIsNone(review_context.previous_review(ai, [], 'reviewer'))
 
 
+class ReviewerStateTests(unittest.TestCase):
+    PARTICIPANTS = [{'user': {'account_id': 'other'}, 'state': 'approved'},
+                    {'user': {'account_id': 'reviewer'}, 'state': 'changes_requested'}]
+
+    def test_state_of_the_reviewer_account(self):
+        result = review_context.summarize({'participants': self.PARTICIPANTS}, [], [], [], reviewer='reviewer')
+        self.assertEqual(result['reviewer_state'], 'changes_requested')
+
+    def test_none_without_identity_or_participation(self):
+        self.assertIsNone(review_context.reviewer_state(self.PARTICIPANTS, None))
+        self.assertIsNone(review_context.reviewer_state(self.PARTICIPANTS, 'absent'))
+        self.assertIsNone(review_context.reviewer_state(None, 'reviewer'))
+
+
 class HistoryTests(unittest.TestCase):
     def test_destination_is_not_assumed_to_be_diff_base(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -245,6 +245,30 @@ class ThreadTests(unittest.TestCase):
             self.assertEqual(bc.main(["x", "resolve", "ws", "repo", "7", "3"]), 2)
 
 
+class ReviewStateTests(unittest.TestCase):
+    PR = f"{bc.API}/repositories/ws/repo/pullrequests/7/request-changes"
+
+    def pub(self, *script):
+        t = FakeTransport(*script)
+        return bc.Publisher("ws", "repo", 7, transport=t, auth="x"), t
+
+    def test_requests_changes_on_the_pull_request(self):
+        pub, t = self.pub({"state": "changes_requested"})
+        self.assertEqual(bc.set_review_state(pub, withdraw=False), (True, "changes_requested", None))
+        self.assertEqual(t.calls, [("POST", self.PR, None)])
+
+    def test_withdraw_removes_the_request(self):
+        pub, t = self.pub(None)
+        self.assertEqual(bc.set_review_state(pub, withdraw=True), (True, "withdrawn", None))
+        self.assertEqual(t.calls, [("DELETE", self.PR, None)])
+
+    def test_api_error_is_reported_not_raised(self):
+        pub, _ = self.pub(bc.BitbucketError(400, "merged"))
+        ok, status, err = bc.set_review_state(pub, withdraw=False)
+        self.assertEqual((ok, status), (False, "failed"))
+        self.assertIn("HTTP 400", err)
+
+
 class WorktreeTests(unittest.TestCase):
     SCRIPT = os.path.join(SCRIPTS, "pr_worktree.sh")
 
