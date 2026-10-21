@@ -3,7 +3,7 @@ name: bitbucket-code-review
 description: "Revisión técnica de un PR de Bitbucket con contexto del repositorio y de ClickUp cuando esté enlazado. Usar ante una solicitud explícita de revisar un PR (URL o número); no ante preguntas sobre la skill o URLs sin solicitud de revisión. Publica hallazgos confirmados y solicita cambios en el PR cuando el usuario lo autoriza."
 metadata:
   author: Andrés Vidal
-  version: 4.5.0
+  version: 4.5.1
   requires:
     env:
       - BITBUCKET_API_TOKEN

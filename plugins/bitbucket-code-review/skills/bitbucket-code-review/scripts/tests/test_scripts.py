@@ -269,6 +269,21 @@ class ReviewStateTests(unittest.TestCase):
         self.assertIn("HTTP 400", err)
 
 
+class TransportTests(unittest.TestCase):
+    def sent_headers(self, payload):
+        resp = mock.MagicMock()
+        resp.__enter__.return_value.read.return_value = b""
+        with mock.patch.object(bc.urllib.request, "urlopen", return_value=resp) as urlopen:
+            bc.request("POST", "https://example.test", payload, auth="x")
+        return {k.lower(): v for k, v in urlopen.call_args[0][0].header_items()}
+
+    def test_bodyless_request_omits_json_content_type(self):
+        self.assertNotIn("content-type", self.sent_headers(None))
+
+    def test_json_body_declares_its_content_type(self):
+        self.assertEqual(self.sent_headers({"a": 1})["content-type"], "application/json")
+
+
 class WorktreeTests(unittest.TestCase):
     SCRIPT = os.path.join(SCRIPTS, "pr_worktree.sh")
 
