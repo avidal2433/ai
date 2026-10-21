@@ -78,10 +78,11 @@ def auth_header():
 def request(method, url, payload=None, auth=None):
     """Una llamada HTTP. Devuelve (status, json|None). Lanza BitbucketError si falla."""
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(
-        url, data=data, method=method,
-        headers={"Authorization": auth or "", "Content-Type": "application/json"},
-    )
+    headers = {"Authorization": auth or ""}
+    # Bitbucket answers 400 to request-changes when a JSON content type arrives without a body.
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=45) as resp:
             raw = resp.read().decode("utf-8")
