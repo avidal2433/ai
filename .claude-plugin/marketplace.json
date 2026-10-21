@@ -11,7 +11,7 @@
     {
       "name": "bitbucket-code-review",
       "source": "./plugins/bitbucket-code-review",
-      "description": "Technical review of Bitbucket pull requests with repository and ClickUp context; publishes verified findings as PR comments.",
+      "description": "Technical review of Bitbucket pull requests with repository and ClickUp context; publishes verified findings as PR comments and requests changes.",
       "category": "development",
       "keywords": ["bitbucket", "code-review", "pull-request", "clickup"]
     }

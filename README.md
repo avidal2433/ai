@@ -8,7 +8,7 @@ Agent skills packaged as plugins for **Claude Code**, **Codex** and **opencode**
 
 | Plugin | What it does |
 | --- | --- |
-| [`bitbucket-code-review`](plugins/bitbucket-code-review) | Reviews a Bitbucket pull request against the repository code and its linked ClickUp task, verifies each finding independently, and publishes the confirmed ones as PR comments when you authorize it. |
+| [`bitbucket-code-review`](plugins/bitbucket-code-review) | Reviews a Bitbucket pull request against the repository code and its linked ClickUp task, verifies each finding independently, publishes the confirmed ones as PR comments and requests changes when you authorize it. |
 
 ## Install
 
@@ -52,7 +52,7 @@ npx skills add avidal2433/ai --skill bitbucket-code-review --agent opencode --gl
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `BITBUCKET_EMAIL` | Yes | Atlassian account email used for Bitbucket API basic auth. |
-| `BITBUCKET_API_TOKEN` | Yes | Atlassian API token with read access to repositories and pull requests (and write access to publish comments). |
+| `BITBUCKET_API_TOKEN` | Yes | Atlassian API token with read access to repositories and pull requests (and write access to publish comments and request changes). |
 | `CLICKUP_API_KEY` | No | Adds the linked ClickUp task (and its parent) as review context. Without it, the review continues and reports the limitation. |
 | `CLICKUP_WORKSPACE_ID` | No | Only needed to resolve ClickUp custom task IDs such as `ABC-123`. |
 | `BITBUCKET_WORKSPACE` | No | Default workspace when the PR is given by number instead of URL. |
@@ -67,7 +67,7 @@ Ask the agent to review a pull request, for example:
 Revisa este PR https://bitbucket.org/<workspace>/<repo>/pull-requests/123
 ```
 
-The skill does not approve, decline or merge pull requests. It only publishes comments after you authorize it.
+When you authorize publishing, the skill posts its findings and then requests changes on the pull request. On a later review it withdraws that request once every finding is fixed. It never approves, declines or merges pull requests.
 
 ## Adding a plugin
 
