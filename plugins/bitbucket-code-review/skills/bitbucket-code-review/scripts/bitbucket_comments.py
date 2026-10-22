@@ -44,10 +44,12 @@ Con --withdraw solo retira una solicitud vigente que tenga su marca
 (review_context.changes_requested_by_ai); una puesta a mano devuelve "skipped". Necesita la
 misma identidad que resolve; sin ella solicita cambios sin mirar el estado previo.
 
-approve aprueba el PR solo si su commit origen sigue siendo --commit, está abierto y no es
-borrador, no es de la cuenta revisora y ningún check del commit está FAILED, STOPPED o
-INPROGRESS. Si la cuenta tiene una solicitud de cambios con su marca, la retira antes; una
-puesta a mano devuelve "skipped". Después publica el comentario de marca (APPROVAL_MARK). Con
+approve aprueba el PR solo si la cabeza de su rama origen es exactamente --commit (SHA completo
+de 40 caracteres), está abierto y no es borrador, no es de la cuenta revisora y ningún check
+del commit está FAILED, STOPPED o INPROGRESS. Si la cuenta tiene una solicitud de cambios con
+su marca, la retira antes; una puesta a mano devuelve "skipped". Tras aprobar vuelve a leer la
+cabeza de la rama: si cambió entretanto, retira la aprobación y devuelve "skipped". Si no,
+publica el comentario de marca (APPROVAL_MARK). Con
 --withdraw solo retira una aprobación vigente que tenga su marca (review_context.approved_by_ai).
 Siempre necesita la identidad de la cuenta revisora.
 
@@ -62,8 +64,10 @@ import base64
 import json
 import os
 import sys
+import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -175,6 +179,14 @@ class Publisher:
 
     def statuses(self, commit):
         return self.list_all(f"{self.repo}/commit/{commit}/statuses?pagelen=100")
+
+    def source_head(self, pr):
+        """SHA completo de la cabeza de la rama origen: el PR solo expone 12 caracteres."""
+        source = pr.get("source") or {}
+        repo = (source.get("repository") or {}).get("full_name")
+        branch = urllib.parse.quote((source.get("branch") or {}).get("name") or "", safe="")
+        ref = self._call("GET", f"{API}/repositories/{repo}/refs/branches/{branch}")[1] or {}
+        return (ref.get("target") or {}).get("hash")
 
     def delete(self, comment_id):
         """Best-effort: se usa para retirar un inline que la API ubicó en otra línea."""
@@ -369,9 +381,8 @@ def history(pub):
     return pub.list_all(f"{pub.pr}/activity?pagelen=50"), pub.list_all(f"{pub.base}?pagelen=100")
 
 
-def same_commit(a, b):
-    n = min(len(a or ""), len(b or ""))
-    return n >= 7 and a[:n] == b[:n]
+def full_sha(value):
+    return bool(re.fullmatch(r"[0-9a-f]{40}", value or ""))
 
 
 def post_marker(pub, status, body, what):
@@ -414,16 +425,18 @@ def withdraw_changes(pub, reviewer):
 
 def approve(pub, reviewer, commit):
     """Aprueba la versión revisada si sigue vigente y su CI no falla ni está en curso."""
+    if not full_sha(commit):
+        return state_result(False, "skipped", "--commit necesita el SHA completo de 40 caracteres")
     try:
         pr = pub.get_pr()
-        head = ((pr.get("source") or {}).get("commit") or {}).get("hash")
         if pr.get("state") != "OPEN" or pr.get("draft"):
             return state_result(False, "skipped", "el PR no está abierto o es un borrador")
-        if not same_commit(head, commit):
-            return state_result(False, "skipped", f"el PR cambió desde la revisión: ahora está en {head}")
         if authored_by({"user": pr.get("author")}, reviewer):
             return state_result(False, "skipped", "el PR es de la cuenta revisora")
-        blocking = sorted({s.get("name") or s.get("key") or "?" for s in pub.statuses(head)
+        head = pub.source_head(pr)
+        if head != commit:
+            return state_result(False, "skipped", f"el PR cambió desde la revisión: ahora está en {head}")
+        blocking = sorted({s.get("name") or s.get("key") or "?" for s in pub.statuses(commit)
                            if s.get("state") in BLOCKING_CHECKS})
         if blocking:
             return state_result(False, "skipped", "CI con checks fallidos o en curso: " + ", ".join(blocking))
@@ -435,9 +448,13 @@ def approve(pub, reviewer, commit):
                 return state_result(False, "skipped", "la solicitud de cambios vigente no la puso una revisión (AI)")
             pub.withdraw_changes()
         pub.approve()
+        head = pub.source_head(pr)
+        if head != commit:
+            pub.withdraw_approval()
+            return state_result(False, "skipped", f"el PR cambió mientras se aprobaba ({head}); se retiró la aprobación")
     except BitbucketError as e:
         return state_result(False, "failed", str(e))
-    return post_marker(pub, "approved", APPROVAL_BODY.format(commit=head[:12]), "la aprobación")
+    return post_marker(pub, "approved", APPROVAL_BODY.format(commit=commit[:12]), "la aprobación")
 
 
 def withdraw_approval(pub, reviewer):
@@ -476,8 +493,8 @@ def cmd_request_changes(args):
 
 
 def cmd_approve(args):
-    if not args.withdraw and not args.commit:
-        print("ERROR: approve necesita --commit <sha revisado> o --withdraw", file=sys.stderr)
+    if not args.withdraw and not full_sha(args.commit):
+        print("ERROR: approve necesita --commit <SHA completo de 40 caracteres> o --withdraw", file=sys.stderr)
         return 2
     auth = auth_header()
     reviewer = reviewer_identity(auth)
@@ -527,7 +544,7 @@ def main(argv):
     a = sub.add_parser("approve", help="aprueba el PR revisado o, con --withdraw, retira la aprobación")
     a.add_argument("workspace"); a.add_argument("repo_slug"); a.add_argument("pr_id", type=int)
     mode = a.add_mutually_exclusive_group()
-    mode.add_argument("--commit", help="commit origen revisado (source.commit.hash)")
+    mode.add_argument("--commit", help="SHA completo (40 caracteres) del commit origen revisado")
     mode.add_argument("--withdraw", action="store_true")
     a.set_defaults(func=cmd_approve)
 

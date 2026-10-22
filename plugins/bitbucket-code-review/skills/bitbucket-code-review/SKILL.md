@@ -3,7 +3,7 @@ name: bitbucket-code-review
 description: "Revisión técnica de un PR de Bitbucket con contexto del repositorio y de ClickUp cuando esté enlazado. Usar ante una solicitud explícita de revisar un PR (URL o número); no ante preguntas sobre la skill o URLs sin solicitud de revisión. Publica hallazgos confirmados y solicita cambios, o aprueba el PR cuando la revisión queda limpia, si el usuario lo autoriza."
 metadata:
   author: Andrés Vidal
-  version: 4.7.0
+  version: 4.7.1
   requires:
     env:
       - BITBUCKET_API_TOKEN
@@ -137,13 +137,13 @@ python3 <skill>/scripts/bitbucket_comments.py reply <workspace> <repo_slug> <pr_
   - ningún check de CI falló ni sigue en curso, y lo que el CI no valida (por ejemplo, un frontend sin compilar) quedó comprobado;
   - integrarlo no exige nada fuera del PR: despliegue coordinado con otro servicio, migración o cambio de datos en otro repositorio, variable de entorno o configuración nueva, dependencia fijada a una rama u operación manual.
 
-  Basta una condición incumplida para no aprobar; nombrarla en el cierre. `--commit` recibe el `source.commit.hash` revisado: el script no aprueba si el PR cambió de commit, está cerrado o en borrador, es de la cuenta revisora o tiene checks fallidos o en curso. Si la cuenta tenía una solicitud de cambios de la IA, la retira antes de aprobar. Publica el comentario `(AI) Aprobado…` que marca la aprobación como de la revisión.
+  Basta una condición incumplida para no aprobar; nombrarla en el cierre. `--commit` recibe el SHA completo del commit revisado (`git -C <repository_path> rev-parse <source.commit.hash>`), porque el PR solo expone 12 caracteres. El script no aprueba si la cabeza de la rama origen no es ese commit, si el PR está cerrado o en borrador, si es de la cuenta revisora o si tiene checks fallidos o en curso; si la rama avanza mientras aprueba, retira la aprobación. Si la cuenta tenía una solicitud de cambios de la IA, la retira antes de aprobar. Publica el comentario `(AI) Aprobado…` que marca la aprobación como de la revisión.
 - Sin defectos pendientes pero sin condiciones para aprobar, retirar lo que haya puesto la IA: la solicitud con `request-changes --withdraw` si `changes_requested_by_ai` es true, y la aprobación con `approve --withdraw` si `approved_by_ai` es true.
 - Bitbucket no registra quién solicitó los cambios o aprobó. Una solicitud o aprobación sin su marca (`changes_requested_by_ai` o `approved_by_ai` en false) la puso una persona: no cambiarla y reportar el conflicto en el cierre. Los scripts también lo comprueban y devuelven `skipped`.
 
 ```bash
 python3 <skill>/scripts/bitbucket_comments.py request-changes <workspace> <repo_slug> <pr_id> [--withdraw]
-python3 <skill>/scripts/bitbucket_comments.py approve <workspace> <repo_slug> <pr_id> (--commit <source.commit.hash> | --withdraw)
+python3 <skill>/scripts/bitbucket_comments.py approve <workspace> <repo_slug> <pr_id> (--commit <sha completo> | --withdraw)
 ```
 
 Si la API falla, los comentarios publicados siguen siendo válidos: reportar el error en el cierre sin reintentar el lote.
