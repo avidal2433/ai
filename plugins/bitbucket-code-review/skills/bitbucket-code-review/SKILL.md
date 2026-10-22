@@ -1,9 +1,9 @@
 ---
 name: bitbucket-code-review
-description: "Revisión técnica de un PR de Bitbucket con contexto del repositorio y de ClickUp cuando esté enlazado. Usar ante una solicitud explícita de revisar un PR (URL o número); no ante preguntas sobre la skill o URLs sin solicitud de revisión. Publica hallazgos confirmados y solicita cambios en el PR cuando el usuario lo autoriza."
+description: "Revisión técnica de un PR de Bitbucket con contexto del repositorio y de ClickUp cuando esté enlazado. Usar ante una solicitud explícita de revisar un PR (URL o número); no ante preguntas sobre la skill o URLs sin solicitud de revisión. Publica hallazgos confirmados y solicita cambios, o aprueba el PR cuando la revisión queda limpia, si el usuario lo autoriza."
 metadata:
   author: Andrés Vidal
-  version: 4.6.0
+  version: 4.7.0
   requires:
     env:
       - BITBUCKET_API_TOKEN
@@ -14,7 +14,7 @@ metadata:
       - CLICKUP_API_KEY  # contexto de tareas ClickUp enlazadas (scripts/clickup_task.py)
       - CLICKUP_WORKSPACE_ID  # solo para custom IDs de ClickUp (p. ej. TF-1234)
       - BITBUCKET_WORKSPACE  # valor por defecto cuando el PR no llega como URL completa
-      - BITBUCKET_ACCOUNT_ID  # cuenta revisora, si el token no puede leer GET /user; la usan la re-revisión y resolve
+      - BITBUCKET_ACCOUNT_ID  # cuenta revisora, si el token no puede leer GET /user; la usan la re-revisión, resolve y approve
   bins:
     - git
     - curl
@@ -25,7 +25,7 @@ metadata:
 
 # Bitbucket Code Review
 
-Revisar con criterio de senior lead: encontrar defectos introducidos por el PR, demostrar su consecuencia y proponer una acción concreta. Aplicar la visión solicitada por el usuario; si no especifica una, priorizar corrección, seguridad, regresiones y pruebas relevantes. No aprobar, declinar ni hacer merge; la única acción sobre el estado del PR es solicitar cambios o retirar esa solicitud (sección 5).
+Revisar con criterio de senior lead: encontrar defectos introducidos por el PR, demostrar su consecuencia y proponer una acción concreta. Aplicar la visión solicitada por el usuario; si no especifica una, priorizar corrección, seguridad, regresiones y pruebas relevantes. No declinar ni hacer merge. Las únicas acciones sobre el estado del PR son solicitar cambios, aprobar y retirar lo que haya puesto una revisión (AI) (sección 5).
 
 ## 1. Preparar el contexto
 
@@ -128,16 +128,24 @@ python3 <skill>/scripts/bitbucket_comments.py reply <workspace> <repo_slug> <pr_
 
 `resolve` solo actúa sobre comentarios raíz `(AI)` de la cuenta revisora; devuelve `skipped` para los demás.
 
-**Solicitar cambios.** Con la misma autorización de publicar, después de los comentarios, respuestas y hilos resueltos, fijar el estado de la cuenta revisora en el PR. Un defecto queda pendiente si se publicó en esta revisión o si su hilo `(AI)` sigue vigente.
+**Estado de la revisión.** Con la misma autorización de publicar, después de los comentarios, respuestas y hilos resueltos, fijar el estado de la cuenta revisora en el PR. Un defecto queda pendiente si se publicó en esta revisión o si su hilo `(AI)` sigue vigente.
 
-- Con al menos un defecto pendiente, solicitar cambios, salvo que `reviewer_state` ya sea `changes_requested`. El script publica además un comentario `(AI) Cambios solicitados…` que marca la solicitud como de la revisión; sin él (`marker: null`), la solicitud no se retirará sola.
-- Sin defectos pendientes, retirar la solicitud con `--withdraw` solo si `changes_requested_by_ai` es true.
-- Bitbucket no registra quién solicitó los cambios. Una solicitud sin esa marca (`reviewer_state` en `changes_requested` y `changes_requested_by_ai` en false) la puso una persona, y lo mismo vale para una aprobación (`approved`): no cambiarlas y reportar el conflicto en el cierre. `--withdraw` también lo comprueba y devuelve `skipped`.
+- Con al menos un defecto pendiente, solicitar cambios. El script no repite una solicitud vigente y retira antes una aprobación de la IA (`approved_by_ai`). Publica además un comentario `(AI) Cambios solicitados…` que marca la solicitud como de la revisión; sin él (`marker: null`), la solicitud no se retirará sola.
+- Aprobar solo cuando la revisión queda limpia y se cumple todo esto:
+  - esta revisión no publicó comentarios ni respuestas, y ningún hilo `(AI)` sigue vigente;
+  - la cobertura fue completa: se leyó el código de la versión revisada, no quedó ningún archivo omitido sin justificar ni candidato no verificable;
+  - ningún check de CI falló ni sigue en curso, y lo que el CI no valida (por ejemplo, un frontend sin compilar) quedó comprobado;
+  - integrarlo no exige nada fuera del PR: despliegue coordinado con otro servicio, migración o cambio de datos en otro repositorio, variable de entorno o configuración nueva, dependencia fijada a una rama u operación manual.
+
+  Basta una condición incumplida para no aprobar; nombrarla en el cierre. `--commit` recibe el `source.commit.hash` revisado: el script no aprueba si el PR cambió de commit, está cerrado o en borrador, es de la cuenta revisora o tiene checks fallidos o en curso. Si la cuenta tenía una solicitud de cambios de la IA, la retira antes de aprobar. Publica el comentario `(AI) Aprobado…` que marca la aprobación como de la revisión.
+- Sin defectos pendientes pero sin condiciones para aprobar, retirar lo que haya puesto la IA: la solicitud con `request-changes --withdraw` si `changes_requested_by_ai` es true, y la aprobación con `approve --withdraw` si `approved_by_ai` es true.
+- Bitbucket no registra quién solicitó los cambios o aprobó. Una solicitud o aprobación sin su marca (`changes_requested_by_ai` o `approved_by_ai` en false) la puso una persona: no cambiarla y reportar el conflicto en el cierre. Los scripts también lo comprueban y devuelven `skipped`.
 
 ```bash
 python3 <skill>/scripts/bitbucket_comments.py request-changes <workspace> <repo_slug> <pr_id> [--withdraw]
+python3 <skill>/scripts/bitbucket_comments.py approve <workspace> <repo_slug> <pr_id> (--commit <source.commit.hash> | --withdraw)
 ```
 
 Si la API falla, los comentarios publicados siguen siendo válidos: reportar el error en el cierre sin reintentar el lote.
 
-Responder brevemente con enlace del PR, cobertura, versión del código revisada, contexto ClickUp/historia utilizado u omitido, CI, hallazgos confirmados, comentarios publicados (inline/global), hilos resueltos y estado de la solicitud de cambios. Explicar limitaciones y candidatos pendientes con motivo. Si no hay hallazgos publicables, decirlo sin inventar comentarios para justificar el trabajo. No volcar el análisis completo salvo que se solicite.
+Responder brevemente con enlace del PR, cobertura, versión del código revisada, contexto ClickUp/historia utilizado u omitido, CI, hallazgos confirmados, comentarios publicados (inline/global), hilos resueltos y estado de la revisión (cambios solicitados, aprobado o el motivo para no aprobar). Explicar limitaciones y candidatos pendientes con motivo. Si no hay hallazgos publicables, decirlo sin inventar comentarios para justificar el trabajo. No volcar el análisis completo salvo que se solicite.

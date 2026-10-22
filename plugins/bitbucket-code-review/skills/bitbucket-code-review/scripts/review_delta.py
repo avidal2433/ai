@@ -7,8 +7,8 @@ los commits origen, destino y previous_review (hacer fetch de ambas ramas antes)
 own_commits: commits sin merge del PR desde previous_review que no vienen del destino, con
 sus archivos. merges: merges posteriores y los archivos con resolución manual de conflictos
 (los que muestra `git show --cc`). threads: hilos raíz (AI) de la cuenta revisora abiertos
-o resueltos por otra persona después de la revisión previa, sin el comentario de marca de la
-solicitud de cambios (CHANGES_MARK); path_touched_after indica si un commit propio del PR tocó el
+o resueltos por otra persona después de la revisión previa, sin los comentarios de marca de la
+solicitud de cambios y de la aprobación (MARKS); path_touched_after indica si un commit propio del PR tocó el
 archivo del hilo después de publicarlo (null en hilos globales). Es una pista para decidir
 qué verificar, no un veredicto: la corrección puede estar en otro archivo.
 Sin previous_review imprime {"previous_review": null} y la re-revisión cubre el PR completo.
@@ -19,7 +19,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from review_context import CHANGES_MARK, authored_by, reviewer_identity
+from review_context import MARKS, authored_by, reviewer_identity
 
 RECORD, SEP = '\x1e', '\x1f'
 
@@ -72,7 +72,7 @@ def threads(comments, reviewer, pr_commits, reviewed_at):
     for c in comments:
         raw = (c.get('content') or {}).get('raw', '')
         if c.get('parent') or not authored_by(c, reviewer) \
-                or not raw.startswith('(AI)') or raw.startswith(CHANGES_MARK):
+                or not raw.startswith('(AI)') or raw.startswith(MARKS):
             continue
         resolution = c.get('resolution')
         resolver = (resolution or {}).get('user') or {}
