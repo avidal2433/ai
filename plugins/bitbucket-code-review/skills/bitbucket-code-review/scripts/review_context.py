@@ -14,6 +14,7 @@ reviewer_state: estado de esa cuenta entre los participantes del PR ("approved",
 changes_requested_by_ai: true si esa solicitud de cambios la puso una revisión (AI). Bitbucket
 no registra quién la pidió: cuenta como de la IA solo si un comentario de la cuenta que empieza
 con CHANGES_MARK se publicó a menos de MARK_WINDOW_SECONDS de su último evento changes_requested.
+approved_by_ai: lo mismo para una aprobación vigente, con APPROVAL_MARK y el evento approval.
 """
 import os
 import json
@@ -26,6 +27,8 @@ from semantic_release_check import extract_tasks
 
 RESOLVED_BODY_CHARS = 200
 CHANGES_MARK = '(AI) Cambios solicitados'
+APPROVAL_MARK = '(AI) Aprobado'
+MARKS = (CHANGES_MARK, APPROVAL_MARK)
 MARK_WINDOW_SECONDS = 120
 
 
@@ -75,16 +78,24 @@ def reviewer_state(participants, reviewer):
     return next((p.get('state') for p in participants or [] if authored_by(p, reviewer)), None)
 
 
-def changes_requested_by_ai(activity, comments, reviewer):
-    events = [e['date'] for e in (a.get('changes_requested') for a in activity)
+def marked_by_ai(activity, comments, reviewer, event, mark):
+    events = [e['date'] for e in (a.get(event) for a in activity)
               if e and e.get('date') and authored_by(e, reviewer)]
     if not events:
         return False
-    requested_at = _when(max(events, key=_when))
-    return any(abs((_when(c['created_on']) - requested_at).total_seconds()) <= MARK_WINDOW_SECONDS
+    happened_at = _when(max(events, key=_when))
+    return any(abs((_when(c['created_on']) - happened_at).total_seconds()) <= MARK_WINDOW_SECONDS
                for c in comments
                if not c.get('deleted') and c.get('created_on') and authored_by(c, reviewer)
-               and (c.get('content') or {}).get('raw', '').startswith(CHANGES_MARK))
+               and (c.get('content') or {}).get('raw', '').startswith(mark))
+
+
+def changes_requested_by_ai(activity, comments, reviewer):
+    return marked_by_ai(activity, comments, reviewer, 'changes_requested', CHANGES_MARK)
+
+
+def approved_by_ai(activity, comments, reviewer):
+    return marked_by_ai(activity, comments, reviewer, 'approval', APPROVAL_MARK)
 
 
 def thread_root(comment, by_id):
@@ -122,6 +133,7 @@ def summarize(pr, stats, comments, statuses, activity=None, reviewer=None):
     description = pr.get('description') or (pr.get('summary') or {}).get('raw') or ''
     live = [c for c in comments if not c.get('deleted')]
     by_id = {c.get('id'): c for c in live}
+    state = reviewer_state(pr.get('participants'), reviewer)
     return {
         'id': pr.get('id'), 'title': pr.get('title'), 'state': pr.get('state'),
         'draft': pr.get('draft', False), 'author': pr.get('author', {}).get('display_name'),
@@ -132,9 +144,10 @@ def summarize(pr, stats, comments, statuses, activity=None, reviewer=None):
                    'added': s.get('lines_added', 0), 'removed': s.get('lines_removed', 0)} for s in stats],
         'comments': [compact_comment(c, by_id) for c in live],
         'previous_review': previous_review(comments, activity or [], reviewer),
-        'reviewer_state': reviewer_state(pr.get('participants'), reviewer),
-        'changes_requested_by_ai': reviewer_state(pr.get('participants'), reviewer) == 'changes_requested'
+        'reviewer_state': state,
+        'changes_requested_by_ai': state == 'changes_requested'
                                    and changes_requested_by_ai(activity or [], comments, reviewer),
+        'approved_by_ai': state == 'approved' and approved_by_ai(activity or [], comments, reviewer),
         'checks': dict(Counter(s.get('state', 'UNKNOWN') for s in statuses)),
         'check_runs': [{'name': s.get('name'), 'state': s.get('state'), 'url': s.get('url')}
                        for s in statuses],

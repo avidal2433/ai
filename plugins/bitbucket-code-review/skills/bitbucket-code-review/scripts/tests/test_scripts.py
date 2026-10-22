@@ -309,6 +309,116 @@ class ReviewStateTests(unittest.TestCase):
              mock.patch("sys.stderr"):
             self.assertEqual(bc.main(["x", "request-changes", "ws", "repo", "7", "--withdraw"]), 2)
 
+    def test_request_does_not_repeat_a_current_request(self):
+        pub, t = self.pub(self.REQUESTED)
+        self.assertEqual(bc.request_changes(pub, "me")["status"], "already_requested")
+        self.assertEqual(len(t.calls), 1)
+
+    def test_request_replaces_an_ai_approval(self):
+        pub, t = self.pub(ApproveTests.APPROVED, ApproveTests.EVENT, ApproveTests.marker(), None,
+                          {"state": "changes_requested"}, {"id": 9})
+        self.assertEqual(bc.request_changes(pub, "me")["status"], "changes_requested")
+        self.assertEqual([c[:2] for c in t.calls[3:5]],
+                         [("DELETE", f"{self.PR}/approve"), ("POST", f"{self.PR}/request-changes")])
+
+    def test_request_keeps_an_approval_set_by_hand(self):
+        pub, t = self.pub(ApproveTests.APPROVED, ApproveTests.EVENT, {"values": []})
+        self.assertEqual(bc.request_changes(pub, "me")["status"], "skipped")
+        self.assertEqual([c[0] for c in t.calls], ["GET", "GET", "GET"])
+
+
+class ApproveTests(unittest.TestCase):
+    PR = ReviewStateTests.PR
+    HEAD = "5aedfc7f4539"
+    APPROVED = {"participants": [{"user": {"account_id": "me"}, "state": "approved"}]}
+    EVENT = {"values": [{"approval": {"date": "2026-10-22T15:00:00+00:00", "user": {"account_id": "me"}}}]}
+    GREEN = {"values": [{"name": "Pipeline", "state": "SUCCESSFUL"}]}
+
+    @staticmethod
+    def marker(created_on="2026-10-22T15:00:02+00:00", author="me"):
+        return {"values": [{"content": {"raw": bc.APPROVAL_BODY.format(commit="5aedfc7f4539")},
+                            "created_on": created_on, "user": {"account_id": author}}]}
+
+    def pr(self, state=None, **extra):
+        return {"state": "OPEN", "draft": False, "source": {"commit": {"hash": self.HEAD}},
+                "author": {"account_id": "author"},
+                "participants": [{"user": {"account_id": "me"}, "state": state}], **extra}
+
+    def pub(self, *script):
+        t = FakeTransport(*script)
+        return bc.Publisher("ws", "repo", 7, transport=t, auth="x"), t
+
+    def test_approves_the_reviewed_commit_and_posts_the_marker(self):
+        pub, t = self.pub(self.pr(), self.GREEN, {"approved": True}, {"id": 11})
+        self.assertEqual(bc.approve(pub, "me", "5aedfc7f4539cde06e213a71a1e82c4b5ba48cf0"),
+                         {"ok": True, "status": "approved", "marker": 11, "error": None})
+        self.assertEqual([c[:2] for c in t.calls[1:]],
+                         [("GET", f"{bc.API}/repositories/ws/repo/commit/{self.HEAD}/statuses?pagelen=100"),
+                          ("POST", f"{self.PR}/approve"), ("POST", f"{self.PR}/comments")])
+        self.assertEqual(t.calls[3][2]["content"]["raw"], bc.APPROVAL_BODY.format(commit=self.HEAD))
+        self.assertTrue(bc.APPROVAL_BODY.startswith(bc.APPROVAL_MARK))
+
+    def test_does_not_approve_a_pr_that_changed_after_the_review(self):
+        pub, t = self.pub(self.pr())
+        self.assertEqual(bc.approve(pub, "me", "1111111aaaa")["status"], "skipped")
+        self.assertEqual(len(t.calls), 1)
+
+    def test_does_not_approve_closed_draft_or_own_prs(self):
+        for pr in (self.pr(state=None, draft=True), {**self.pr(), "state": "MERGED"},
+                   {**self.pr(), "author": {"account_id": "me"}}):
+            pub, t = self.pub(pr)
+            self.assertEqual(bc.approve(pub, "me", self.HEAD)["status"], "skipped")
+            self.assertEqual(len(t.calls), 1)
+
+    def test_does_not_approve_with_failed_or_running_checks(self):
+        for state in bc.BLOCKING_CHECKS:
+            pub, t = self.pub(self.pr(), {"values": [{"name": "Pipeline", "state": state}]})
+            result = bc.approve(pub, "me", self.HEAD)
+            self.assertEqual(result["status"], "skipped")
+            self.assertIn("Pipeline", result["error"])
+            self.assertNotIn("POST", [c[0] for c in t.calls])
+
+    def test_keeps_a_current_approval(self):
+        pub, t = self.pub(self.pr("approved"), self.GREEN)
+        self.assertEqual(bc.approve(pub, "me", self.HEAD)["status"], "already_approved")
+        self.assertEqual(len(t.calls), 2)
+
+    def test_replaces_an_ai_change_request(self):
+        pub, t = self.pub(self.pr("changes_requested"), self.GREEN, ReviewStateTests.EVENT,
+                          ReviewStateTests().marker(), None, {"approved": True}, {"id": 12})
+        self.assertEqual(bc.approve(pub, "me", self.HEAD)["status"], "approved")
+        self.assertEqual([c[:2] for c in t.calls[4:6]],
+                         [("DELETE", f"{self.PR}/request-changes"), ("POST", f"{self.PR}/approve")])
+
+    def test_keeps_a_change_request_set_by_hand(self):
+        pub, t = self.pub(self.pr("changes_requested"), self.GREEN, ReviewStateTests.EVENT, {"values": []})
+        self.assertEqual(bc.approve(pub, "me", self.HEAD)["status"], "skipped")
+        self.assertNotIn("POST", [c[0] for c in t.calls])
+
+    def test_approval_without_marker_is_reported(self):
+        pub, _ = self.pub(self.pr(), self.GREEN, {"approved": True}, bc.BitbucketError(401, "nope"))
+        result = bc.approve(pub, "me", self.HEAD)
+        self.assertEqual((result["ok"], result["status"], result["marker"]), (True, "approved", None))
+        self.assertIn("no se retirará sola", result["error"])
+
+    def test_withdraws_an_approval_with_its_marker(self):
+        pub, t = self.pub(self.APPROVED, self.EVENT, self.marker(), None)
+        self.assertEqual(bc.withdraw_approval(pub, "me")["status"], "withdrawn")
+        self.assertEqual(t.calls[-1][:2], ("DELETE", f"{self.PR}/approve"))
+
+    def test_keeps_an_approval_set_by_hand(self):
+        for comments in ({"values": []}, self.marker("2026-10-21T10:00:00+00:00"), self.marker(author="someone")):
+            pub, t = self.pub(self.APPROVED, self.EVENT, comments)
+            self.assertEqual(bc.withdraw_approval(pub, "me")["status"], "skipped")
+            self.assertNotIn("DELETE", [c[0] for c in t.calls])
+
+    def test_approve_cli_needs_identity_and_a_commit(self):
+        with mock.patch.dict(os.environ, {"BITBUCKET_EMAIL": "e", "BITBUCKET_API_TOKEN": "t"}, clear=True), \
+             mock.patch("sys.stderr"):
+            self.assertEqual(bc.main(["x", "approve", "ws", "repo", "7"]), 2)
+            with mock.patch.object(bc, "reviewer_identity", return_value=None):
+                self.assertEqual(bc.main(["x", "approve", "ws", "repo", "7", "--commit", self.HEAD]), 2)
+
 
 class TransportTests(unittest.TestCase):
     def sent_headers(self, payload):

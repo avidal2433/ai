@@ -217,9 +217,33 @@ class ChangesRequestedByAiTests(unittest.TestCase):
 
     def test_marker_is_not_a_thread_to_recheck(self):
         comments = [self.comment(review_context.CHANGES_MARK, '2026-10-21T20:25:48+00:00'),
+                    {**self.comment(review_context.APPROVAL_MARK, '2026-10-21T20:25:49+00:00'), 'id': 3},
                     {**self.comment('(AI) hallazgo', '2026-10-21T20:25:40+00:00'), 'id': 2}]
         result = review_delta.threads(comments, 'reviewer', [], '2026-10-21T20:00:00+00:00')
         self.assertEqual([t['id'] for t in result], [2])
+
+
+class ApprovedByAiTests(unittest.TestCase):
+    APPROVED = [{'user': {'account_id': 'reviewer'}, 'state': 'approved'}]
+    ACTIVITY = [{'approval': {'date': '2026-10-22T15:00:00+00:00', 'user': {'account_id': 'reviewer'}}}]
+
+    def comment(self, raw, created_on='2026-10-22T15:00:02Z'):
+        return {'id': 1, 'content': {'raw': raw}, 'created_on': created_on, 'user': {'account_id': 'reviewer'}}
+
+    def by_ai(self, comments, participants=None):
+        return review_context.summarize({'participants': participants or self.APPROVED}, [], comments, [],
+                                        self.ACTIVITY, 'reviewer')['approved_by_ai']
+
+    def test_marker_published_with_the_approval(self):
+        self.assertTrue(self.by_ai([self.comment(review_context.APPROVAL_MARK + ': sin defectos')]))
+
+    def test_approval_set_by_hand(self):
+        self.assertFalse(self.by_ai([self.comment(review_context.CHANGES_MARK)]))
+        self.assertFalse(self.by_ai([self.comment(review_context.APPROVAL_MARK, '2026-10-21T15:00:00Z')]))
+
+    def test_needs_a_current_approval(self):
+        comments = [self.comment(review_context.APPROVAL_MARK)]
+        self.assertFalse(self.by_ai(comments, [{'user': {'account_id': 'reviewer'}, 'state': None}]))
 
 
 class HistoryTests(unittest.TestCase):
