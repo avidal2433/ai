@@ -68,7 +68,7 @@ Ask the agent to review a pull request, for example:
 Revisa este PR https://bitbucket.org/<workspace>/<repo>/pull-requests/123
 ```
 
-When you authorize publishing, the skill posts its findings and then requests changes on the pull request. When a review posts nothing and merging needs nothing outside the pull request (full coverage, CI without failed or running checks, no coordinated deploys, migrations elsewhere or branch-pinned dependencies), it approves the reviewed commit instead. A later review replaces or withdraws that change request or approval, but only if the skill set it: a change request or approval you set by hand stays in place. It never declines or merges pull requests.
+When you authorize publishing, the skill posts its findings and then requests changes on the pull request. When a review posts nothing and merging needs nothing outside the pull request (full coverage, CI without failed or running checks, no coordinated deploys, migrations elsewhere or branch-pinned dependencies), it approves the reviewed commit instead, without posting a comment: the approval itself is the confirmation. A later review replaces or withdraws that change request or approval. A change request is withdrawn only if the skill set it, so one you set by hand stays in place; approvals carry no marker, so any approval from the reviewer account counts as the skill's and a later review with findings withdraws it. A re-review that posts new findings renews the skill's change request, so a fresh request and its marker comment come after those findings. It never declines or merges pull requests.
 
 ## Adding a plugin
 

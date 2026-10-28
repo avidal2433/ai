@@ -38,8 +38,11 @@ resuelve nada. Un hilo ya resuelto cuenta como ok. Salida: una línea JSON por c
 
 request-changes deja a la cuenta del token en "changes requested" sobre el PR y publica el
 comentario de marca (CHANGES_MARK) que la identifica como de una revisión (AI); sin esa marca
-no se retirará sola. Si la cuenta ya tiene una solicitud vigente no hace nada; si tiene una
-aprobación, la retira antes cuando lleva su marca y devuelve "skipped" cuando la puso una persona.
+no se retirará sola. Si la cuenta ya tiene una solicitud vigente con su marca y publicó
+comentarios o respuestas (AI) después de ella, la renueva: la retira, la vuelve a pedir y publica
+una marca nueva detrás de esos hallazgos. Sin hallazgos nuevos devuelve "already_requested"; una
+solicitud vigente puesta a mano no se renueva ("already_requested" con el motivo en error). Si
+tiene una aprobación, la retira antes.
 Con --withdraw solo retira una solicitud vigente que tenga su marca
 (review_context.changes_requested_by_ai); una puesta a mano devuelve "skipped". Necesita la
 misma identidad que resolve; sin ella solicita cambios sin mirar el estado previo.
@@ -48,10 +51,10 @@ approve aprueba el PR solo si la cabeza de su rama origen es exactamente --commi
 de 40 caracteres), está abierto y no es borrador, no es de la cuenta revisora y ningún check
 del commit está FAILED, STOPPED o INPROGRESS. Si la cuenta tiene una solicitud de cambios con
 su marca, la retira antes; una puesta a mano devuelve "skipped". Tras aprobar vuelve a leer la
-cabeza de la rama: si cambió entretanto, retira la aprobación y devuelve "skipped". Si no,
-publica el comentario de marca (APPROVAL_MARK). Con
---withdraw solo retira una aprobación vigente que tenga su marca (review_context.approved_by_ai).
-Siempre necesita la identidad de la cuenta revisora.
+cabeza de la rama: si cambió entretanto, retira la aprobación y devuelve "skipped". No publica
+comentario: la aprobación del PR es la confirmación ("marker" sale null), y por eso toda aprobación
+de la cuenta se trata como de una revisión (review_context.approved_by_ai). Con --withdraw retira la
+aprobación vigente de la cuenta. Siempre necesita la identidad de la cuenta revisora.
 
 Salida de request-changes y approve: una línea JSON {"ok", "status", "marker", "error"} con
 status "changes_requested", "already_requested", "approved", "already_approved", "withdrawn",
@@ -72,16 +75,14 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diff_line_map  # noqa: E402  (mismo directorio)
-from review_context import (APPROVAL_MARK, CHANGES_MARK, approved_by_ai, authored_by,  # noqa: E402
-                            changes_requested_by_ai, reviewer_state)
+from review_context import (CHANGES_MARK, authored_by, changes_requested_by_ai,  # noqa: E402
+                            findings_after_request, reviewer_state)
 
 API = "https://api.bitbucket.org/2.0"
 AI_PREFIX = "(AI)"
 FALLBACK_TAG = "[No inline por mapeo de diff: {path}:{line}]"
 CHANGES_BODY = (f"{CHANGES_MARK} por los hallazgos (AI) pendientes de esta revisión. La solicitud se "
                 "retira cuando una revisión posterior confirme que están corregidos.")
-APPROVAL_BODY = (APPROVAL_MARK + ": la revisión no encontró defectos pendientes en `{commit}`. La aprobación "
-                 "se retira si una revisión posterior encuentra alguno.")
 BLOCKING_CHECKS = ("FAILED", "STOPPED", "INPROGRESS")
 
 
@@ -394,19 +395,30 @@ def post_marker(pub, status, body, what):
 
 
 def request_changes(pub, reviewer=None):
-    """Solicita cambios y publica la marca que permite retirarlos después."""
+    """Solicita cambios y publica la marca que permite retirarlos después.
+
+    Una solicitud vigente de la IA se renueva si la cuenta publicó hallazgos (AI) después de ella,
+    para que la nueva solicitud y su marca queden detrás de esos hallazgos.
+    """
+    withdrawn = False
     try:
         if reviewer:
             state = reviewer_state(pub.get_pr().get("participants"), reviewer)
             if state == "changes_requested":
-                return state_result(True, "already_requested")
+                activity, comments = history(pub)
+                if not changes_requested_by_ai(activity, comments, reviewer):
+                    return state_result(True, "already_requested",
+                                        "la solicitud vigente no la puso una revisión (AI); no se renueva")
+                if not findings_after_request(activity, comments, reviewer):
+                    return state_result(True, "already_requested")
+                pub.withdraw_changes()
+                withdrawn = True
             if state == "approved":
-                if not approved_by_ai(*history(pub), reviewer):
-                    return state_result(False, "skipped", "la aprobación vigente no la puso una revisión (AI)")
                 pub.withdraw_approval()
         pub.request_changes()
     except BitbucketError as e:
-        return state_result(False, "failed", str(e))
+        retired = "se retiró la solicitud anterior para renovarla y no se pudo volver a pedir: " if withdrawn else ""
+        return state_result(False, "failed", retired + str(e))
     return post_marker(pub, "changes_requested", CHANGES_BODY, "la solicitud")
 
 
@@ -454,16 +466,14 @@ def approve(pub, reviewer, commit):
             return state_result(False, "skipped", f"el PR cambió mientras se aprobaba ({head}); se retiró la aprobación")
     except BitbucketError as e:
         return state_result(False, "failed", str(e))
-    return post_marker(pub, "approved", APPROVAL_BODY.format(commit=commit[:12]), "la aprobación")
+    return state_result(True, "approved")
 
 
 def withdraw_approval(pub, reviewer):
-    """Retira la aprobación vigente solo si la puso una revisión (AI)."""
+    """Retira la aprobación vigente de la cuenta revisora."""
     try:
         if reviewer_state(pub.get_pr().get("participants"), reviewer) != "approved":
             return state_result(False, "skipped", "la cuenta revisora no tiene una aprobación vigente")
-        if not approved_by_ai(*history(pub), reviewer):
-            return state_result(False, "skipped", "la aprobación no la puso una revisión (AI)")
         pub.withdraw_approval()
         return state_result(True, "withdrawn")
     except BitbucketError as e:
