@@ -244,6 +244,35 @@ class ThreadTests(unittest.TestCase):
              mock.patch("sys.stderr"):
             self.assertEqual(bc.main(["x", "resolve", "ws", "repo", "7", "3"]), 2)
 
+    def test_reopens_a_resolved_ai_root_comment(self):
+        pub, t = self.pub(self.ai(resolution={"user": {"account_id": "author"}}), None)
+        self.assertEqual(bc.reopen_comment(pub, 3, "me"), (True, "reopened", None))
+        self.assertEqual(t.calls[1][:2], ("DELETE", f"{bc.API}/repositories/ws/repo/pullrequests/7/comments/3/resolve"))
+
+    def test_open_thread_is_not_reopened(self):
+        pub, t = self.pub(self.ai())
+        self.assertEqual(bc.reopen_comment(pub, 3, "me"), (True, "already_open", None))
+        self.assertEqual(len(t.calls), 1)
+
+    def test_reopen_leaves_human_foreign_and_reply_threads_untouched(self):
+        resolved = {"resolution": {"user": {"account_id": "author"}}}
+        for comment in ({"content": {"raw": "por favor revisa"}, "user": {"account_id": "me"}, **resolved},
+                        self.ai(author="someone", **resolved), self.ai(parent={"id": 1}, **resolved)):
+            pub, t = self.pub(comment)
+            self.assertEqual(bc.reopen_comment(pub, 3, "me")[:2], (False, "skipped"))
+            self.assertEqual(len(t.calls), 1)
+
+    def test_thread_reopened_meanwhile_counts_as_open(self):
+        pub, _ = self.pub(self.ai(resolution={"user": {}}),
+                          bc.BitbucketError(404, "No PullRequestCommentResolution matches the given query."))
+        self.assertEqual(bc.reopen_comment(pub, 3, "me"), (True, "already_open", None))
+
+    def test_reopen_cli_refuses_without_reviewer_identity(self):
+        with mock.patch.dict(os.environ, {"BITBUCKET_EMAIL": "e", "BITBUCKET_API_TOKEN": "t"}, clear=True), \
+             mock.patch.object(bc, "reviewer_identity", return_value=None), \
+             mock.patch("sys.stderr"):
+            self.assertEqual(bc.main(["x", "reopen", "ws", "repo", "7", "3"]), 2)
+
 
 class ReviewStateTests(unittest.TestCase):
     PR = f"{bc.API}/repositories/ws/repo/pullrequests/7"
