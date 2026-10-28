@@ -7,6 +7,7 @@ Uso:
   python3 bitbucket_comments.py global  <workspace> <repo_slug> <pr_id> (--body-file <archivo> | --body "<texto>")
   python3 bitbucket_comments.py reply   <workspace> <repo_slug> <pr_id> <comment_id> (--body-file <archivo> | --body "<texto>")
   python3 bitbucket_comments.py resolve <workspace> <repo_slug> <pr_id> <comment_id> [<comment_id> ...]
+  python3 bitbucket_comments.py reopen  <workspace> <repo_slug> <pr_id> <comment_id> [<comment_id> ...]
   python3 bitbucket_comments.py request-changes <workspace> <repo_slug> <pr_id> [--withdraw]
   python3 bitbucket_comments.py approve <workspace> <repo_slug> <pr_id> (--commit <sha> | --withdraw)
 
@@ -34,7 +35,10 @@ y una línea final {"summary": {"inline", "global", "fallback", "failed"}}.
 reply responde dentro del hilo de un comentario. resolve solo resuelve hilos cuyo
 comentario raíz empieza con "(AI)" y fue publicado por la cuenta revisora
 (BITBUCKET_ACCOUNT_ID o, si el token lo permite, GET /user); sin esa identidad no
-resuelve nada. Un hilo ya resuelto cuenta como ok. Salida: una línea JSON por comment_id {"id", "ok", "status", "error"}.
+resuelve nada. Un hilo ya resuelto cuenta como ok. reopen reabre, con las mismas condiciones, un
+hilo (AI) resuelto cuyo defecto sigue vigente: responder dentro de un hilo resuelto no lo reabre y
+la respuesta queda colapsada. Un hilo ya abierto cuenta como ok. Salida de resolve y reopen: una
+línea JSON por comment_id {"id", "ok", "status", "error"}.
 
 request-changes deja a la cuenta del token en "changes requested" sobre el PR y publica el
 comentario de marca (CHANGES_MARK) que la identifica como de una revisión (AI); sin esa marca
@@ -154,6 +158,9 @@ class Publisher:
 
     def resolve(self, comment_id):
         return self._call("POST", f"{self.base}/{comment_id}/resolve")[1]
+
+    def reopen(self, comment_id):
+        return self._call("DELETE", f"{self.base}/{comment_id}/resolve")[1]
 
     def list_all(self, url):
         items = []
@@ -337,17 +344,25 @@ def reviewer_identity(auth):
     return user.get("account_id") or user.get("uuid")
 
 
+def not_own_ai_root(comment, reviewer):
+    """Motivo por el que el comentario no es la raíz de un hilo (AI) de la cuenta revisora, o None."""
+    if not (comment.get("content") or {}).get("raw", "").startswith(AI_PREFIX):
+        return "el comentario no es (AI)"
+    user = comment.get("user") or {}
+    if reviewer not in (user.get("account_id"), user.get("uuid")):
+        return "el comentario no es de la cuenta revisora"
+    if comment.get("parent"):
+        return "solo se actúa sobre el comentario raíz del hilo"
+    return None
+
+
 def resolve_comment(pub, comment_id, reviewer):
     """Resuelve un hilo (AI) de la cuenta revisora. Devuelve (ok, status, error)."""
     try:
         comment = pub.get(comment_id) or {}
-        if not (comment.get("content") or {}).get("raw", "").startswith(AI_PREFIX):
-            return False, "skipped", "el comentario no es (AI)"
-        user = comment.get("user") or {}
-        if reviewer not in (user.get("account_id"), user.get("uuid")):
-            return False, "skipped", "el comentario no es de la cuenta revisora"
-        if comment.get("parent"):
-            return False, "skipped", "solo se resuelve el comentario raíz del hilo"
+        reason = not_own_ai_root(comment, reviewer)
+        if reason:
+            return False, "skipped", reason
         if comment.get("resolution"):
             return True, "already_resolved", None
         pub.resolve(comment_id)
@@ -358,20 +373,46 @@ def resolve_comment(pub, comment_id, reviewer):
         return False, "failed", str(e)
 
 
-def cmd_resolve(args):
-    auth = auth_header()
-    reviewer = reviewer_identity(auth)
-    if not reviewer:
-        print("ERROR: no se pudo identificar la cuenta revisora; define BITBUCKET_ACCOUNT_ID "
-              "(account_id de Bitbucket del dueño del token)", file=sys.stderr)
-        return 2
-    pub = Publisher(args.workspace, args.repo_slug, args.pr_id, auth=auth)
-    failed = 0
-    for comment_id in args.comment_ids:
-        ok, status, err = resolve_comment(pub, comment_id, reviewer)
-        failed += not ok
-        print(json.dumps({"id": comment_id, "ok": ok, "status": status, "error": err}, ensure_ascii=False))
-    return 0 if failed == 0 else 1
+def reopen_comment(pub, comment_id, reviewer):
+    """Reabre un hilo (AI) de la cuenta revisora. Devuelve (ok, status, error).
+
+    Responder dentro de un hilo resuelto no lo reabre y la respuesta queda colapsada.
+    """
+    try:
+        comment = pub.get(comment_id) or {}
+        reason = not_own_ai_root(comment, reviewer)
+        if reason:
+            return False, "skipped", reason
+        if not comment.get("resolution"):
+            return True, "already_open", None
+        pub.reopen(comment_id)
+        return True, "reopened", None
+    except BitbucketError as e:
+        if e.status == 404:
+            return True, "already_open", None
+        return False, "failed", str(e)
+
+
+def thread_command(action):
+    def run(args):
+        auth = auth_header()
+        reviewer = reviewer_identity(auth)
+        if not reviewer:
+            print("ERROR: no se pudo identificar la cuenta revisora; define BITBUCKET_ACCOUNT_ID "
+                  "(account_id de Bitbucket del dueño del token)", file=sys.stderr)
+            return 2
+        pub = Publisher(args.workspace, args.repo_slug, args.pr_id, auth=auth)
+        failed = 0
+        for comment_id in args.comment_ids:
+            ok, status, err = action(pub, comment_id, reviewer)
+            failed += not ok
+            print(json.dumps({"id": comment_id, "ok": ok, "status": status, "error": err}, ensure_ascii=False))
+        return 0 if failed == 0 else 1
+    return run
+
+
+cmd_resolve = thread_command(resolve_comment)
+cmd_reopen = thread_command(reopen_comment)
 
 
 def state_result(ok, status, error=None, marker=None):
@@ -545,6 +586,11 @@ def main(argv):
     v.add_argument("workspace"); v.add_argument("repo_slug"); v.add_argument("pr_id", type=int)
     v.add_argument("comment_ids", type=int, nargs="+")
     v.set_defaults(func=cmd_resolve)
+
+    o = sub.add_parser("reopen", help="reabre hilos (AI) resueltos cuyo defecto sigue vigente")
+    o.add_argument("workspace"); o.add_argument("repo_slug"); o.add_argument("pr_id", type=int)
+    o.add_argument("comment_ids", type=int, nargs="+")
+    o.set_defaults(func=cmd_reopen)
 
     c = sub.add_parser("request-changes", help="solicita cambios en el PR o, con --withdraw, retira la solicitud")
     c.add_argument("workspace"); c.add_argument("repo_slug"); c.add_argument("pr_id", type=int)
