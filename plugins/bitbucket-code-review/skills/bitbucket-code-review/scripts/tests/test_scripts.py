@@ -309,22 +309,62 @@ class ReviewStateTests(unittest.TestCase):
              mock.patch("sys.stderr"):
             self.assertEqual(bc.main(["x", "request-changes", "ws", "repo", "7", "--withdraw"]), 2)
 
+    def finding(self, created_on, raw="(AI) hallazgo", author="me", **extra):
+        return {"content": {"raw": raw}, "created_on": created_on, "user": {"account_id": author}, **extra}
+
     def test_request_does_not_repeat_a_current_request(self):
-        pub, t = self.pub(self.REQUESTED)
-        self.assertEqual(bc.request_changes(pub, "me")["status"], "already_requested")
-        self.assertEqual(len(t.calls), 1)
-
-    def test_request_replaces_an_ai_approval(self):
-        pub, t = self.pub(ApproveTests.APPROVED, ApproveTests.EVENT, ApproveTests.marker(), None,
-                          {"state": "changes_requested"}, {"id": 9})
-        self.assertEqual(bc.request_changes(pub, "me")["status"], "changes_requested")
-        self.assertEqual([c[:2] for c in t.calls[3:5]],
-                         [("DELETE", f"{self.PR}/approve"), ("POST", f"{self.PR}/request-changes")])
-
-    def test_request_keeps_an_approval_set_by_hand(self):
-        pub, t = self.pub(ApproveTests.APPROVED, ApproveTests.EVENT, {"values": []})
-        self.assertEqual(bc.request_changes(pub, "me")["status"], "skipped")
+        pub, t = self.pub(self.REQUESTED, self.EVENT, self.marker())
+        self.assertEqual(bc.request_changes(pub, "me"),
+                         {"ok": True, "status": "already_requested", "marker": None, "error": None})
         self.assertEqual([c[0] for c in t.calls], ["GET", "GET", "GET"])
+
+    def test_request_is_renewed_after_new_findings(self):
+        comments = {"values": self.marker()["values"] + [self.finding("2026-10-22T15:28:43+00:00")]}
+        pub, t = self.pub(self.REQUESTED, self.EVENT, comments, None, {"state": "changes_requested"}, {"id": 9})
+        self.assertEqual(bc.request_changes(pub, "me"),
+                         {"ok": True, "status": "changes_requested", "marker": 9, "error": None})
+        self.assertEqual([c[:2] for c in t.calls[3:]], [("DELETE", f"{self.PR}/request-changes"),
+                                                        ("POST", f"{self.PR}/request-changes"),
+                                                        ("POST", f"{self.PR}/comments")])
+
+    def test_a_reply_after_the_request_also_renews_it(self):
+        reply = self.finding("2026-10-22T15:28:44+00:00", parent={"id": 1})
+        pub, t = self.pub(self.REQUESTED, self.EVENT, {"values": self.marker()["values"] + [reply]},
+                          None, {"state": "changes_requested"}, {"id": 9})
+        self.assertEqual(bc.request_changes(pub, "me")["status"], "changes_requested")
+        self.assertIn("DELETE", [c[0] for c in t.calls])
+
+    def test_findings_before_the_request_or_from_others_do_not_renew_it(self):
+        comments = {"values": self.marker()["values"] + [
+            self.finding("2026-10-21T20:25:40+00:00"),
+            self.finding("2026-10-22T15:28:43+00:00", author="someone"),
+            self.finding("2026-10-22T15:28:43+00:00", raw="por favor revisa"),
+            self.finding("2026-10-22T15:28:43+00:00", deleted=True),
+            self.finding("2026-10-22T15:28:43+00:00", raw=ApproveTests.LEGACY_MARKER)]}
+        pub, t = self.pub(self.REQUESTED, self.EVENT, comments)
+        self.assertEqual(bc.request_changes(pub, "me")["status"], "already_requested")
+        self.assertEqual(len(t.calls), 3)
+
+    def test_a_request_set_by_hand_is_not_renewed(self):
+        pub, t = self.pub(self.REQUESTED, self.EVENT, {"values": [self.finding("2026-10-22T15:28:43+00:00")]})
+        result = bc.request_changes(pub, "me")
+        self.assertEqual((result["ok"], result["status"]), (True, "already_requested"))
+        self.assertIn("no se renueva", result["error"] or "")
+        self.assertNotIn("DELETE", [c[0] for c in t.calls])
+
+    def test_a_renewal_that_cannot_request_again_says_the_request_was_withdrawn(self):
+        comments = {"values": self.marker()["values"] + [self.finding("2026-10-22T15:28:43+00:00")]}
+        pub, t = self.pub(self.REQUESTED, self.EVENT, comments, None, bc.BitbucketError(400, "merged"))
+        result = bc.request_changes(pub, "me")
+        self.assertEqual((result["ok"], result["status"]), (False, "failed"))
+        self.assertIn("se retiró la solicitud anterior", result["error"])
+        self.assertNotEqual(t.calls[-1][1], f"{self.PR}/comments")
+
+    def test_request_replaces_the_account_approval(self):
+        pub, t = self.pub(ApproveTests.APPROVED, None, {"state": "changes_requested"}, {"id": 9})
+        self.assertEqual(bc.request_changes(pub, "me")["status"], "changes_requested")
+        self.assertEqual([c[:2] for c in t.calls[1:3]],
+                         [("DELETE", f"{self.PR}/approve"), ("POST", f"{self.PR}/request-changes")])
 
 
 class ApproveTests(unittest.TestCase):
@@ -333,13 +373,8 @@ class ApproveTests(unittest.TestCase):
     REF = {"target": {"hash": HEAD}}
     BRANCH = f"{bc.API}/repositories/ws/repo/refs/branches/feature%2Fgds"
     APPROVED = {"participants": [{"user": {"account_id": "me"}, "state": "approved"}]}
-    EVENT = {"values": [{"approval": {"date": "2026-10-22T15:00:00+00:00", "user": {"account_id": "me"}}}]}
     GREEN = {"values": [{"name": "Pipeline", "state": "SUCCESSFUL"}]}
-
-    @staticmethod
-    def marker(created_on="2026-10-22T15:00:02+00:00", author="me"):
-        return {"values": [{"content": {"raw": bc.APPROVAL_BODY.format(commit="5aedfc7f4539")},
-                            "created_on": created_on, "user": {"account_id": author}}]}
+    LEGACY_MARKER = "(AI) Aprobado: la revisión no encontró defectos pendientes en `5aedfc7f4539`."
 
     def pr(self, state=None, **extra):
         return {"state": "OPEN", "draft": False,
@@ -352,16 +387,14 @@ class ApproveTests(unittest.TestCase):
         t = FakeTransport(*script)
         return bc.Publisher("ws", "repo", 7, transport=t, auth="x"), t
 
-    def test_approves_the_reviewed_commit_and_posts_the_marker(self):
-        pub, t = self.pub(self.pr(), self.REF, self.GREEN, {"approved": True}, self.REF, {"id": 11})
+    def test_approves_the_reviewed_commit_without_a_comment(self):
+        pub, t = self.pub(self.pr(), self.REF, self.GREEN, {"approved": True}, self.REF)
         self.assertEqual(bc.approve(pub, "me", self.HEAD),
-                         {"ok": True, "status": "approved", "marker": 11, "error": None})
+                         {"ok": True, "status": "approved", "marker": None, "error": None})
         self.assertEqual([c[:2] for c in t.calls[1:]],
                          [("GET", self.BRANCH),
                           ("GET", f"{bc.API}/repositories/ws/repo/commit/{self.HEAD}/statuses?pagelen=100"),
-                          ("POST", f"{self.PR}/approve"), ("GET", self.BRANCH), ("POST", f"{self.PR}/comments")])
-        self.assertEqual(t.calls[5][2]["content"]["raw"], bc.APPROVAL_BODY.format(commit=self.HEAD[:12]))
-        self.assertTrue(bc.APPROVAL_BODY.startswith(bc.APPROVAL_MARK))
+                          ("POST", f"{self.PR}/approve"), ("GET", self.BRANCH)])
 
     def test_needs_the_full_reviewed_sha(self):
         for commit in (self.HEAD[:12], self.HEAD.upper(), None):
@@ -405,7 +438,7 @@ class ApproveTests(unittest.TestCase):
 
     def test_replaces_an_ai_change_request(self):
         pub, t = self.pub(self.pr("changes_requested"), self.REF, self.GREEN, ReviewStateTests.EVENT,
-                          ReviewStateTests().marker(), None, {"approved": True}, self.REF, {"id": 12})
+                          ReviewStateTests().marker(), None, {"approved": True}, self.REF)
         self.assertEqual(bc.approve(pub, "me", self.HEAD)["status"], "approved")
         self.assertEqual([c[:2] for c in t.calls[5:7]],
                          [("DELETE", f"{self.PR}/request-changes"), ("POST", f"{self.PR}/approve")])
@@ -415,22 +448,15 @@ class ApproveTests(unittest.TestCase):
         self.assertEqual(bc.approve(pub, "me", self.HEAD)["status"], "skipped")
         self.assertNotIn("POST", [c[0] for c in t.calls])
 
-    def test_approval_without_marker_is_reported(self):
-        pub, _ = self.pub(self.pr(), self.REF, self.GREEN, {"approved": True}, self.REF, bc.BitbucketError(401, "nope"))
-        result = bc.approve(pub, "me", self.HEAD)
-        self.assertEqual((result["ok"], result["status"], result["marker"]), (True, "approved", None))
-        self.assertIn("no se retirará sola", result["error"])
-
-    def test_withdraws_an_approval_with_its_marker(self):
-        pub, t = self.pub(self.APPROVED, self.EVENT, self.marker(), None)
+    def test_withdraws_the_account_approval(self):
+        pub, t = self.pub(self.APPROVED, None)
         self.assertEqual(bc.withdraw_approval(pub, "me")["status"], "withdrawn")
         self.assertEqual(t.calls[-1][:2], ("DELETE", f"{self.PR}/approve"))
 
-    def test_keeps_an_approval_set_by_hand(self):
-        for comments in ({"values": []}, self.marker("2026-10-21T10:00:00+00:00"), self.marker(author="someone")):
-            pub, t = self.pub(self.APPROVED, self.EVENT, comments)
-            self.assertEqual(bc.withdraw_approval(pub, "me")["status"], "skipped")
-            self.assertNotIn("DELETE", [c[0] for c in t.calls])
+    def test_withdraw_skips_without_a_current_approval(self):
+        pub, t = self.pub(self.pr())
+        self.assertEqual(bc.withdraw_approval(pub, "me")["status"], "skipped")
+        self.assertNotIn("DELETE", [c[0] for c in t.calls])
 
     def test_approve_cli_needs_identity_and_a_commit(self):
         with mock.patch.dict(os.environ, {"BITBUCKET_EMAIL": "e", "BITBUCKET_API_TOKEN": "t"}, clear=True), \

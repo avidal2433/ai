@@ -234,12 +234,10 @@ class ApprovedByAiTests(unittest.TestCase):
         return review_context.summarize({'participants': participants or self.APPROVED}, [], comments, [],
                                         self.ACTIVITY, 'reviewer')['approved_by_ai']
 
-    def test_marker_published_with_the_approval(self):
-        self.assertTrue(self.by_ai([self.comment(review_context.APPROVAL_MARK + ': sin defectos')]))
-
-    def test_approval_set_by_hand(self):
-        self.assertFalse(self.by_ai([self.comment(review_context.CHANGES_MARK)]))
-        self.assertFalse(self.by_ai([self.comment(review_context.APPROVAL_MARK, '2026-10-21T15:00:00Z')]))
+    def test_any_current_approval_of_the_account_counts(self):
+        self.assertTrue(self.by_ai([]))
+        self.assertTrue(self.by_ai([self.comment(review_context.CHANGES_MARK)]))
+        self.assertTrue(self.by_ai([self.comment(review_context.APPROVAL_MARK, '2026-10-21T15:00:00Z')]))
 
     def test_needs_a_current_approval(self):
         comments = [self.comment(review_context.APPROVAL_MARK)]
