@@ -1,6 +1,6 @@
 ---
 name: bitbucket-code-review
-description: "Revisión técnica de un PR de Bitbucket con contexto del repositorio y de ClickUp cuando esté enlazado. Usar ante una solicitud explícita de revisar un PR (URL o número); no ante preguntas sobre la skill o URLs sin solicitud de revisión. Publica hallazgos confirmados y solicita cambios, o aprueba el PR cuando la revisión queda limpia, si el usuario lo autoriza."
+description: "Revisión técnica de un PR de Bitbucket con contexto del repositorio y de ClickUp cuando esté enlazado. Usar ante una solicitud explícita de revisar un PR (URL o número); no ante preguntas sobre la skill o URLs sin solicitud de revisión. Publica hallazgos confirmados y solicita cambios, o aprueba el PR cuando la revisión queda limpia y sus pruebas end-to-end pasan, si el usuario lo autoriza."
 metadata:
   author: Andrés Vidal
   version: 4.7.1
@@ -105,6 +105,8 @@ Solo si quedan candidatos, leer [adversarial-verification.md](references/adversa
 
 **Qué se publica.** Todo hallazgo confirmado que el PR introduce o vuelve alcanzable se publica, también cuando hoy no falla: incumplimiento de un contrato o de una convención documentada del repo, código muerto o duplicado con semántica divergente, una guarda o validación faltante en un camino que todavía no se ejecuta. «No rompe nada hoy» no es motivo para dejarlo en el chat; el comentario nombra la condición bajo la que fallaría y la acción. También se publica un criterio explícito de la tarea enlazada o de la descripción del PR que el PR no cumple, aunque no toque ese código, salvo que la tarea documente que se movió a otra. Solo quedan en el chat lo no verificable, las preferencias sin regla del repo y lo que el PR no toca ni su tarea le exige.
 
+**Pruebas end-to-end.** Si después de verificar no queda ningún defecto pendiente (ni confirmado en esta revisión ni en un hilo `(AI)` vigente), leer [end-to-end.md](references/end-to-end.md) y ejecutar las pruebas end-to-end del commit revisado. Hay que probar el cambio y los flujos vecinos por su entrada real (navegador, HTTP, comando, aplicación consumidora) en un entorno propio de la revisión, y la suite automatizada tiene que quedar en verde. Un escenario que falla solo en el PR es un candidato más: se verifica como los demás, con la corrida como evidencia. Con defectos pendientes no hacen falta, porque el PR no se aprobará.
+
 ## 5. Publicar y cerrar
 
 Publicar cuando esté autorizado por la solicitud o el contexto del usuario; si pidió solo análisis o borrador, entregarlo sin publicar. No interpretar esta skill como autorización adicional. Si hace falta autorización, preparar primero los comentarios completos para que la aprobación sea el último paso.
@@ -136,6 +138,7 @@ python3 <skill>/scripts/bitbucket_comments.py reply <workspace> <repo_slug> <pr_
   - esta revisión no publicó comentarios ni respuestas, y ningún hilo `(AI)` sigue vigente;
   - la cobertura fue completa: se leyó el código de la versión revisada, no quedó ningún archivo omitido sin justificar ni candidato no verificable;
   - ningún check de CI falló ni sigue en curso, y lo que el CI no valida (por ejemplo, un frontend sin compilar) quedó comprobado;
+  - las pruebas end-to-end (sección 4) se ejecutaron en el commit revisado: pasaron todos los escenarios del cambio y de regresión, y la suite quedó en verde;
   - integrarlo no exige nada fuera del PR: despliegue coordinado con otro servicio, migración o cambio de datos en otro repositorio, variable de entorno o configuración nueva, dependencia fijada a una rama u operación manual.
 
   Basta una condición incumplida para no aprobar; nombrarla en el cierre. `--commit` recibe el SHA completo del commit revisado (`git -C <repository_path> rev-parse <source.commit.hash>`), porque el PR solo expone 12 caracteres. El script no aprueba si la cabeza de la rama origen no es ese commit, si el PR está cerrado o en borrador, si es de la cuenta revisora o si tiene checks fallidos o en curso; si la rama avanza mientras aprueba, retira la aprobación. Si la cuenta tenía una solicitud de cambios de la IA, la retira antes de aprobar. No publica comentario: la aprobación del PR es la confirmación, y el resultado trae `marker: null`.
@@ -149,4 +152,4 @@ python3 <skill>/scripts/bitbucket_comments.py approve <workspace> <repo_slug> <p
 
 Si la API falla, los comentarios publicados siguen siendo válidos: reportar el error en el cierre sin reintentar el lote.
 
-Responder brevemente con enlace del PR, cobertura, versión del código revisada, contexto ClickUp/historia utilizado u omitido, CI, hallazgos confirmados, comentarios publicados (inline/global), hilos resueltos y reabiertos, y estado de la revisión (cambios solicitados, aprobado o el motivo para no aprobar). Explicar limitaciones y candidatos pendientes con motivo. Si no hay hallazgos publicables, decirlo sin inventar comentarios para justificar el trabajo. No volcar el análisis completo salvo que se solicite.
+Responder brevemente con enlace del PR, cobertura, versión del código revisada, contexto ClickUp/historia utilizado u omitido, CI, pruebas end-to-end (escenarios ejecutados con su resultado y los que quedaron sin ejecutar, con motivo), hallazgos confirmados, comentarios publicados (inline/global), hilos resueltos y reabiertos, y estado de la revisión (cambios solicitados, aprobado o el motivo para no aprobar). Explicar limitaciones y candidatos pendientes con motivo. Si no hay hallazgos publicables, decirlo sin inventar comentarios para justificar el trabajo. No volcar el análisis completo salvo que se solicite.
