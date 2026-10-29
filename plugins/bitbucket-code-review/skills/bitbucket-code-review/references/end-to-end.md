@@ -43,7 +43,7 @@ Ejecutar cada escenario y registrar en `<outdir>/e2e/` su resultado y su evidenc
 
 ## Video de evidencia
 
-Toda corrida end-to-end deja un MP4 con el recorrido de cada escenario, que se adjunta a la tarea de revisión (sección 5 de la skill).
+Toda corrida end-to-end deja un MP4 con el recorrido de cada escenario. Se adjunta, con la explicación de los casos, a las tareas que enlaza la descripción del PR (sección 5 de la skill). Son las tareas del requerimiento, que se comparten con el cliente.
 
 - **Escenarios con navegador.** Grabarlos con la grabación de video del navegador (en Playwright, `recordVideo` a 1280x720), un archivo por escenario.
 - **Escenarios sin interfaz** (HTTP, comandos, migraciones). Mostrarlos en una página HTML con la petición o el comando, la salida relevante y la comprobación en la base, y capturarla como imagen.
@@ -55,6 +55,22 @@ Armar el MP4 en el orden del recorrido. Con `:segundos`, una imagen queda ese ti
 ```bash
 python3 <skill>/scripts/e2e_video.py <outdir>/e2e/e2e-<repo_slug>-<pr_id>-<sha7>.mp4 portada.png:4 escenario-1.png:3 escenario-1.webm resultado-1.png:2 resumen.png:6
 ```
+
+## Explicación de los casos
+
+El video va acompañado de un comentario en la tarea, escrito para el cliente. El cliente conoce el requerimiento, pero no el código. Guardarlo en `<outdir>/e2e/comentario.md` con esta forma:
+
+```text
+Pruebas end-to-end del PR <url del PR> sobre la versión <sha7>: <todos los casos pasaron | N de M casos pasaron | quedaron casos sin probar>.
+
+Casos probados:
+- <qué se hizo y qué se comprobó, en lenguaje del requerimiento>: <pasó | falló | no se pudo probar, y por qué>.
+```
+
+- **Una línea por caso**, en el orden del video, y como máximo unas 12. Los casos parecidos se agrupan.
+- **Primero los casos del requerimiento**, nombrando sus criterios cuando la tarea los numera (CA-1, RN-02). Después, los flujos existentes que se comprobaron para descartar regresiones.
+- **Sin detalles internos:** nada de clases, endpoints, puertos, nombres de bases, dobles de prueba ni comandos. Tampoco datos sensibles.
+- **Sin repetir el nombre del video:** el script agrega la línea que lo nombra.
 
 ## Sin escenarios completos no se aprueba
 

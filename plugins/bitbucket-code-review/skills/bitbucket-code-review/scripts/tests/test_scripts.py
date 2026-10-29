@@ -616,69 +616,82 @@ class E2eVideoTests(unittest.TestCase):
 
 
 class ClickupAttachTests(unittest.TestCase):
-    PR = "https://bitbucket.org/placetopay/panel/pull-requests/4391"
+    NAME = "e2e-panel-4366-4f5e30b.mp4"
 
-    def review_task(self, tid, pr=PR):
-        return {"id": tid, "markdown_description": f"**PR:** [{pr}]({pr})"}
-
-    def test_matches_the_exact_pull_request_link(self):
-        self.assertTrue(clickup_attach.links_pr(self.review_task("a"), self.PR))
-        self.assertTrue(clickup_attach.links_pr(self.review_task("a", self.PR + "/overview"), self.PR))
-        self.assertFalse(clickup_attach.links_pr(self.review_task("a", self.PR + "1"), self.PR))
-        self.assertFalse(clickup_attach.links_pr(self.review_task("a", self.PR[:-1]), self.PR))
-
-    def test_finds_the_review_task_across_pages(self):
-        pages = [{"tasks": [self.review_task("x", self.PR[:-1])], "last_page": False},
-                 {"tasks": [self.review_task("t1")], "last_page": True}]
-        calls = []
-
-        def fetch(method, path, key, *rest):
-            calls.append(path)
-            return pages[len(calls) - 1]
-        self.assertEqual([t["id"] for t in clickup_attach.find_review_tasks("901", self.PR, "k", fetch)], ["t1"])
-        self.assertTrue(calls[1].endswith("page=1"))
-
-    def video(self, d, name="e2e-panel-4391-7c33771.mp4"):
+    def video(self, d, name=NAME):
         path = os.path.join(d, name)
         with open(path, "wb") as f:
             f.write(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64)
         return path
 
-    def test_uploads_the_video_once(self):
+    def clickup(self, attachments=(), comments=()):
+        calls = []
+
+        def fetch(method, path, key, body=None, content_type=None):
+            calls.append((method, path, body, content_type))
+            if method == "GET" and "/comment" in path:
+                return {"comments": list(comments)}
+            if method == "GET":
+                return {"id": "abc", "url": "https://app.clickup.com/t/abc", "attachments": list(attachments)}
+            if path.split("?")[0].endswith("/attachment"):
+                return {"id": "a1", "title": self.NAME, "url": "https://files/a1"}
+            return {"id": "c1"}
+        return fetch, calls
+
+    def test_attaches_the_video_and_explains_the_cases_once(self):
+        fetch, calls = self.clickup()
         with tempfile.TemporaryDirectory() as d:
-            path, sent = self.video(d), []
+            result = clickup_attach.publish("TF-2980", self.video(d), "Casos probados:\n- Login con 2FA: pasa.",
+                                            "k", "9", fetch)
+        self.assertEqual((result["attachment"]["id"], result["comment_id"], result["skipped"]), ("a1", "c1", []))
+        posts = [c for c in calls if c[0] == "POST"]
+        self.assertEqual([c[1] for c in posts], ["/task/TF-2980/attachment?custom_task_ids=true&team_id=9",
+                                                 "/task/TF-2980/comment?custom_task_ids=true&team_id=9"])
+        self.assertIn(b'name="attachment"; filename="e2e-panel-4366-4f5e30b.mp4"', posts[0][2])
+        comment = json.loads(posts[1][2])
+        self.assertFalse(comment["notify_all"])
+        self.assertTrue(comment["comment_text"].startswith("Casos probados:"))
+        self.assertTrue(comment["comment_text"].endswith(f"{self.NAME}, adjunto en esta tarea."))
 
-            def fetch(method, url, key, body=None, content_type=None):
-                if method == "GET":
-                    return {"id": "t1", "url": "https://app.clickup.com/t/t1", "attachments": []}
-                sent.append((url, body, content_type))
-                return {"id": "a1", "title": os.path.basename(path), "url": "https://files/a1"}
-            result = clickup_attach.attach("t1", path, "k", None, fetch)
-        self.assertEqual((result["attachment"]["id"], result["skipped"]), ("a1", None))
-        url, body, content_type = sent[0]
-        self.assertEqual(url, "/task/t1/attachment")
-        self.assertTrue(content_type.startswith("multipart/form-data; boundary="))
-        self.assertIn(b'name="attachment"; filename="e2e-panel-4391-7c33771.mp4"', body)
-
-    def test_an_already_attached_video_is_not_uploaded_again(self):
+    def test_nothing_is_repeated_on_a_second_run(self):
+        fetch, calls = self.clickup(attachments=[{"id": "a0", "title": self.NAME, "url": "u"}],
+                                    comments=[{"id": "c0", "comment_text": f"... Video de las pruebas: {self.NAME}"}])
         with tempfile.TemporaryDirectory() as d:
-            path = self.video(d)
+            result = clickup_attach.publish("86e3u4x70", self.video(d), "x", "k", None, fetch)
+        self.assertEqual((result["attachment"]["id"], result["comment_id"]), ("a0", "c0"))
+        self.assertEqual(result["skipped"], ["attachment", "comment"])
+        self.assertFalse([c for c in calls if c[0] == "POST"])
 
-            def fetch(method, url, key, body=None, content_type=None):
-                self.assertEqual((method, url), ("GET", "/task/TF-1?custom_task_ids=true&team_id=9"))
-                return {"id": "t1", "attachments": [{"id": "a0", "title": os.path.basename(path), "url": "u"}]}
-            result = clickup_attach.attach("TF-1", path, "k", "9", fetch)
-        self.assertEqual((result["attachment"]["id"], result["skipped"]), ("a0", "already_attached"))
+    def test_a_failing_task_does_not_stop_the_others(self):
+        def publish(task_id, *rest):
+            if task_id == "PT-1":
+                raise clickup_attach.urllib.error.HTTPError("u", 404, "no", {}, None)
+            return {"task_id": task_id}
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"CLICKUP_API_KEY": "k",
+                                                                             "CLICKUP_WORKSPACE_ID": "9"}):
+            notes = os.path.join(d, "casos.md")
+            with open(notes, "w") as f:
+                f.write("Casos probados: ...")
+            with mock.patch.object(clickup_attach, "publish", publish), \
+                    mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as out:
+                code = clickup_attach.main(["x", self.video(d), "--task", "#PT-1", "--task", "PT-2",
+                                            "--comment-file", notes])
+        result = json.loads(out.getvalue())
+        self.assertEqual(code, 1)
+        self.assertEqual([r.get("error") for r in result["tasks"]], ["ClickUp HTTP 404", None])
 
-    def test_only_named_mp4_files_are_attached(self):
+    def test_requires_an_explanation_and_a_real_mp4(self):
         with tempfile.TemporaryDirectory() as d:
-            self.assertIsNone(clickup_attach.check_video(self.video(d)))
+            video = self.video(d)
+            empty = os.path.join(d, "vacio.md")
+            open(empty, "w").close()
+            self.assertEqual(clickup_attach.main(["x", video, "--task", "TF-1", "--comment-file", empty]), 2)
+            self.assertIsNone(clickup_attach.check_video(video))
             self.assertIn("nombre", clickup_attach.check_video(os.path.join(d, "mi video.mp4")))
             fake = os.path.join(d, "e2e.mp4")
             with open(fake, "wb") as f:
                 f.write(b"<html>no es video</html>")
             self.assertIn("no es un MP4", clickup_attach.check_video(fake))
-
 
 if __name__ == "__main__":
     unittest.main()

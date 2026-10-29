@@ -15,7 +15,6 @@ metadata:
       - CLICKUP_WORKSPACE_ID  # solo para custom IDs de ClickUp (p. ej. TF-1234)
       - BITBUCKET_WORKSPACE  # valor por defecto cuando el PR no llega como URL completa
       - BITBUCKET_ACCOUNT_ID  # cuenta revisora, si el token no puede leer GET /user; la usan la re-revisión, resolve y approve
-      - CLICKUP_REVIEW_LIST_ID  # lista de las tareas de revisión, para adjuntar el video end-to-end (scripts/clickup_attach.py)
     bins:
       - ffmpeg  # y ffprobe: arman y validan el video de las pruebas end-to-end (scripts/e2e_video.py)
   bins:
@@ -134,13 +133,13 @@ python3 <skill>/scripts/bitbucket_comments.py reply <workspace> <repo_slug> <pr_
 
 `resolve` y `reopen` solo actúan sobre comentarios raíz `(AI)` de la cuenta revisora; devuelven `skipped` para los demás.
 
-**Evidencia end-to-end.** Con la misma autorización de publicar, si se ejecutaron pruebas end-to-end (pasaran o no), adjuntar su video a la tarea de revisión antes de fijar el estado del PR. La tarea de revisión es la tarea de ClickUp cuya descripción enlaza el PR, no la del requerimiento que el PR enlaza en la suya. Usar `--task` si quien invoca la skill la indica; si no, buscarla con `--pr-url` en la lista `CLICKUP_REVIEW_LIST_ID`. Es la única escritura en ClickUp.
+**Evidencia end-to-end.** Con la misma autorización de publicar, si se ejecutaron pruebas end-to-end (pasaran o no), dejar la evidencia en cada tarea que enlaza la descripción del PR (`review_context.json.tasks`) antes de fijar el estado del PR: el video y un comentario breve con los casos probados. Esas tareas son las del requerimiento y se comparten con el cliente; el comentario se redacta para ese público, según [end-to-end.md](references/end-to-end.md). Es la única escritura en ClickUp.
 
 ```bash
-python3 <skill>/scripts/clickup_attach.py <video.mp4> (--task <task_id> | --pr-url <url del PR> --list <list_id>)
+python3 <skill>/scripts/clickup_attach.py <video.mp4> --task <task_id> [--task <task_id> ...] --comment-file <outdir>/e2e/comentario.md
 ```
 
-Si no se identifica una tarea de revisión, no adjuntar y decirlo en el cierre. Si el adjunto falla, reintentarlo una vez. Si vuelve a fallar, no aprobar y reportarlo en el cierre, sin comentario en el PR: el fallo es de la revisión, no del PR.
+Si el PR no enlaza ninguna tarea, no dejar evidencia en ClickUp y decirlo en el cierre. Si el adjunto falla, reintentarlo una vez. Si vuelve a fallar, no aprobar y reportarlo en el cierre, sin comentario en el PR: el fallo es de la revisión, no del PR.
 
 **Estado de la revisión.** Con la misma autorización de publicar, después de los comentarios, respuestas e hilos resueltos o reabiertos, fijar el estado de la cuenta revisora en el PR. Un defecto queda pendiente si se publicó en esta revisión o si su hilo `(AI)` sigue vigente. Antes de solicitar cambios, cada defecto pendiente tiene que estar visible en un hilo sin resolver: si alguno solo consta en un hilo resuelto, reabrirlo o publicarlo antes, porque la marca `(AI) Cambios solicitados…` remite a esos hallazgos.
 
@@ -149,7 +148,7 @@ Si no se identifica una tarea de revisión, no adjuntar y decirlo en el cierre. 
   - esta revisión no publicó comentarios ni respuestas, y ningún hilo `(AI)` sigue vigente;
   - la cobertura fue completa: se leyó el código de la versión revisada, no quedó ningún archivo omitido sin justificar ni candidato no verificable;
   - ningún check de CI falló ni sigue en curso, y lo que el CI no valida (por ejemplo, un frontend sin compilar) quedó comprobado;
-  - las pruebas end-to-end (sección 4) se ejecutaron en el commit revisado: pasaron todos los escenarios del cambio y de regresión, la suite quedó en verde y su video quedó adjunto a la tarea de revisión, si se identificó una;
+  - las pruebas end-to-end (sección 4) se ejecutaron en el commit revisado: pasaron todos los escenarios del cambio y de regresión, la suite quedó en verde, y el video y la explicación de los casos quedaron en las tareas que enlaza el PR, si enlaza alguna;
   - integrarlo no exige nada fuera del PR: despliegue coordinado con otro servicio, migración o cambio de datos en otro repositorio, variable de entorno o configuración nueva, dependencia fijada a una rama u operación manual.
 
   Basta una condición incumplida para no aprobar; nombrarla en el cierre. `--commit` recibe el SHA completo del commit revisado (`git -C <repository_path> rev-parse <source.commit.hash>`), porque el PR solo expone 12 caracteres. El script no aprueba si la cabeza de la rama origen no es ese commit, si el PR está cerrado o en borrador, si es de la cuenta revisora o si tiene checks fallidos o en curso; si la rama avanza mientras aprueba, retira la aprobación. Si la cuenta tenía una solicitud de cambios de la IA, la retira antes de aprobar. No publica comentario: la aprobación del PR es la confirmación, y el resultado trae `marker: null`.
