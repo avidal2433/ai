@@ -139,7 +139,7 @@ python3 <skill>/scripts/bitbucket_comments.py reply <workspace> <repo_slug> <pr_
 python3 <skill>/scripts/clickup_attach.py <video.mp4> --task <task_id> [--task <task_id> ...] --comment-file <outdir>/e2e/comentario.md
 ```
 
-Si el PR no enlaza ninguna tarea, no dejar evidencia en ClickUp y decirlo en el cierre. Si el adjunto falla, reintentarlo una vez. Si vuelve a fallar, no aprobar y reportarlo en el cierre, sin comentario en el PR: el fallo es de la revisión, no del PR.
+El enlace lo escribe el autor del PR y la evidencia la ve el cliente de esa tarea. Por eso solo recibe evidencia una tarea enlazada que la revisión cotejó como requerimiento de este PR (sección 2). Una tarea cuyo contenido no corresponde al cambio, por un error de tipeo o un enlace ajeno, se omite y se reporta en el cierre. Si el PR no enlaza ninguna tarea, no dejar evidencia en ClickUp y decirlo en el cierre. Si el adjunto falla, reintentarlo una vez. Si vuelve a fallar, no aprobar y reportarlo en el cierre, sin comentario en el PR: el fallo es de la revisión, no del PR.
 
 **Estado de la revisión.** Con la misma autorización de publicar, después de los comentarios, respuestas e hilos resueltos o reabiertos, fijar el estado de la cuenta revisora en el PR. Un defecto queda pendiente si se publicó en esta revisión o si su hilo `(AI)` sigue vigente. Antes de solicitar cambios, cada defecto pendiente tiene que estar visible en un hilo sin resolver: si alguno solo consta en un hilo resuelto, reabrirlo o publicarlo antes, porque la marca `(AI) Cambios solicitados…` remite a esos hallazgos.
 
