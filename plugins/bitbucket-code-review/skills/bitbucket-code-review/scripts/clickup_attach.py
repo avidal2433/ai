@@ -11,9 +11,10 @@ Uso:
   El comentario es el texto de --comment-file; el script le agrega una línea con el nombre del video.
   Requiere CLICKUP_API_KEY con permiso de escritura; CLICKUP_WORKSPACE_ID solo para custom IDs.
 
-No repite nada: no sube el video si la tarea ya tiene un adjunto con ese nombre, ni comenta si un
-comentario reciente ya lo nombra. Nombrar el video con el commit (e2e-<repo>-<pr>-<sha7>.mp4) para
-que cada versión del PR tenga el suyo.
+No repite nada: no sube el video si la cuenta ya adjuntó uno con ese nombre a la tarea, ni comenta si
+un comentario reciente de la cuenta trae la línea exacta que nombra el video. Lo que suba o comente otra
+persona no cuenta, para que nadie pueda suprimir la evidencia. Nombrar el video con el commit
+(e2e-<repo>-<pr>-<sha7>.mp4) para que cada versión del PR tenga el suyo. Como máximo 3 tareas.
 
 Salida: una línea JSON {"ok", "tasks": [{"task_id", "task_url", "attachment", "comment_id",
   "skipped": [...], "error"}]}; ok es false si alguna tarea falló (las demás se procesan igual).
@@ -32,6 +33,7 @@ import uuid
 API = "https://api.clickup.com/api/v2"
 MAX_BYTES = 100 * 1024 * 1024
 MAX_COMMENT = 4000
+MAX_TASKS = 3
 FILENAME = re.compile(r"[\w.-]+\.mp4")
 
 
@@ -55,17 +57,30 @@ def multipart(path):
         return head + f.read() + f"\r\n--{boundary}--\r\n".encode(), f"multipart/form-data; boundary={boundary}"
 
 
+def video_line(video):
+    return f"Video de las pruebas: {os.path.basename(video)}, adjunto en esta tarea."
+
+
 def comment_text(explanation, video):
-    return f"{explanation.strip()}\n\nVideo de las pruebas: {os.path.basename(video)}, adjunto en esta tarea."
+    return f"{explanation.strip()}\n\n{video_line(video)}"
 
 
-def publish(task_id, video, explanation, key, team, fetch=request):
-    """Sube el video y comenta los casos en una tarea, salvo lo que ya esté."""
+def by(item, me):
+    return str((item.get("user") or {}).get("id")) == str(me)
+
+
+def whoami(key, fetch=request):
+    return fetch("GET", "/user", key)["user"]["id"]
+
+
+def publish(task_id, video, explanation, key, team, me, fetch=request):
+    """Sube el video y comenta los casos en una tarea, salvo lo que la cuenta `me` ya dejó."""
     title = os.path.basename(video)
     task = fetch("GET", task_path(task_id, team), key)
     result = {"task_id": task.get("id"), "task_url": task.get("url"), "attachment": None, "comment_id": None,
               "skipped": []}
-    existing = next((a for a in task.get("attachments") or [] if a.get("title") == title), None)
+    existing = next((a for a in task.get("attachments") or []
+                     if a.get("title") == title and by(a, me) and not a.get("deleted")), None)
     if existing:
         result["skipped"].append("attachment")
     else:
@@ -74,7 +89,8 @@ def publish(task_id, video, explanation, key, team, fetch=request):
     result["attachment"] = {k: existing.get(k) for k in ("id", "title", "url")}
 
     comments = fetch("GET", task_path(task_id, team, "/comment"), key).get("comments") or []
-    said = next((c for c in comments if title in (c.get("comment_text") or "")), None)
+    said = next((c for c in comments
+                 if by(c, me) and video_line(video) in (c.get("comment_text") or "").splitlines()), None)
     if said:
         result["skipped"].append("comment")
     else:
@@ -116,14 +132,23 @@ def main(argv):
         return 2
     key, team = os.environ.get("CLICKUP_API_KEY"), os.environ.get("CLICKUP_WORKSPACE_ID")
     task_ids = list(dict.fromkeys(t.lstrip("#") for t in args.task))
+    if len(task_ids) > MAX_TASKS:
+        print(f"ERROR: más de {MAX_TASKS} tareas: dejar la evidencia solo en las del requerimiento del PR",
+              file=sys.stderr)
+        return 2
     if not key or (any("-" in t for t in task_ids) and not team):
         print("ERROR: CLICKUP_API_KEY / CLICKUP_WORKSPACE_ID no configurados", file=sys.stderr)
         return 1
 
+    try:
+        me = whoami(key)
+    except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as e:
+        print(f"ERROR: ClickUp no identificó la cuenta: {e}", file=sys.stderr)
+        return 1
     results = []
     for task_id in task_ids:
         try:
-            results.append(publish(task_id, args.video, explanation, key, team))
+            results.append(publish(task_id, args.video, explanation, key, team, me))
         except urllib.error.HTTPError as e:
             results.append({"task_id": task_id, "error": f"ClickUp HTTP {e.code}"})
         except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as e:

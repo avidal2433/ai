@@ -642,7 +642,7 @@ class ClickupAttachTests(unittest.TestCase):
         fetch, calls = self.clickup()
         with tempfile.TemporaryDirectory() as d:
             result = clickup_attach.publish("TF-2980", self.video(d), "Casos probados:\n- Login con 2FA: pasa.",
-                                            "k", "9", fetch)
+                                            "k", "9", 7, fetch)
         self.assertEqual((result["attachment"]["id"], result["comment_id"], result["skipped"]), ("a1", "c1", []))
         posts = [c for c in calls if c[0] == "POST"]
         self.assertEqual([c[1] for c in posts], ["/task/TF-2980/attachment?custom_task_ids=true&team_id=9",
@@ -654,13 +654,24 @@ class ClickupAttachTests(unittest.TestCase):
         self.assertTrue(comment["comment_text"].endswith(f"{self.NAME}, adjunto en esta tarea."))
 
     def test_nothing_is_repeated_on_a_second_run(self):
-        fetch, calls = self.clickup(attachments=[{"id": "a0", "title": self.NAME, "url": "u"}],
-                                    comments=[{"id": "c0", "comment_text": f"... Video de las pruebas: {self.NAME}"}])
+        line = clickup_attach.video_line(self.NAME)
+        fetch, calls = self.clickup(attachments=[{"id": "a0", "title": self.NAME, "url": "u", "user": {"id": 7}}],
+                                    comments=[{"id": "c0", "comment_text": f"Casos...\n\n{line}", "user": {"id": 7}}])
         with tempfile.TemporaryDirectory() as d:
-            result = clickup_attach.publish("86e3u4x70", self.video(d), "x", "k", None, fetch)
+            result = clickup_attach.publish("86e3u4x70", self.video(d), "x", "k", None, 7, fetch)
         self.assertEqual((result["attachment"]["id"], result["comment_id"]), ("a0", "c0"))
         self.assertEqual(result["skipped"], ["attachment", "comment"])
         self.assertFalse([c for c in calls if c[0] == "POST"])
+
+    def test_what_someone_else_left_does_not_suppress_the_evidence(self):
+        line = clickup_attach.video_line(self.NAME)
+        fetch, calls = self.clickup(attachments=[{"id": "a0", "title": self.NAME, "url": "u", "user": {"id": 9}}],
+                                    comments=[{"id": "c0", "comment_text": line, "user": {"id": 9}},
+                                              {"id": "c1", "comment_text": f"ya está {self.NAME}", "user": {"id": 7}}])
+        with tempfile.TemporaryDirectory() as d:
+            result = clickup_attach.publish("TF-1", self.video(d), "x", "k", "9", 7, fetch)
+        self.assertEqual(result["skipped"], [])
+        self.assertEqual(len([c for c in calls if c[0] == "POST"]), 2)
 
     def test_a_failing_task_does_not_stop_the_others(self):
         def publish(task_id, *rest):
@@ -673,6 +684,7 @@ class ClickupAttachTests(unittest.TestCase):
             with open(notes, "w") as f:
                 f.write("Casos probados: ...")
             with mock.patch.object(clickup_attach, "publish", publish), \
+                    mock.patch.object(clickup_attach, "whoami", lambda key: 7), \
                     mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as out:
                 code = clickup_attach.main(["x", self.video(d), "--task", "#PT-1", "--task", "PT-2",
                                             "--comment-file", notes])
@@ -686,6 +698,11 @@ class ClickupAttachTests(unittest.TestCase):
             empty = os.path.join(d, "vacio.md")
             open(empty, "w").close()
             self.assertEqual(clickup_attach.main(["x", video, "--task", "TF-1", "--comment-file", empty]), 2)
+            notes = os.path.join(d, "casos.md")
+            with open(notes, "w") as f:
+                f.write("Casos probados: ...")
+            many = [a for n in range(4) for a in ("--task", f"TF-{n}")]
+            self.assertEqual(clickup_attach.main(["x", video, *many, "--comment-file", notes]), 2)
             self.assertIsNone(clickup_attach.check_video(video))
             self.assertIn("nombre", clickup_attach.check_video(os.path.join(d, "mi video.mp4")))
             fake = os.path.join(d, "e2e.mp4")
