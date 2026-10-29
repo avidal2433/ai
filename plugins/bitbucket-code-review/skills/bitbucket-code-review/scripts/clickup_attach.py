@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """
-clickup_attach.py — Adjunta el video de las pruebas end-to-end a la tarea de revisión del PR en ClickUp.
+clickup_attach.py — Deja la evidencia de las pruebas end-to-end en las tareas de ClickUp que enlaza el PR:
+el video como adjunto y un comentario que explica los casos probados.
 
 Uso:
-  python3 clickup_attach.py <video.mp4> --task <task_id>
-  python3 clickup_attach.py <video.mp4> --pr-url <url del PR> --list <list_id>
+  python3 clickup_attach.py <video.mp4> --task <task_id> [--task <task_id> ...] --comment-file <archivo>
 
-  La tarea de revisión es la que enlaza el PR en su descripción, no la del requerimiento que el PR
-  enlaza en la suya. Con --task se usa esa; con --list se busca en la lista la única tarea cuya
-  descripción enlaza el PR.
+  <task_id> es cada tarea que enlaza la descripción del PR (review_context.json.tasks): las del
+  requerimiento, que se comparten con el cliente. Custom id (TEAM-123, con o sin "#") o id interno.
+  El comentario es el texto de --comment-file; el script le agrega una línea con el nombre del video.
   Requiere CLICKUP_API_KEY con permiso de escritura; CLICKUP_WORKSPACE_ID solo para custom IDs.
 
-Si la tarea ya tiene un adjunto con el mismo nombre de archivo, no lo vuelve a subir: nombrar el
-video con el commit (e2e-<repo>-<pr>-<sha7>.mp4) para que cada versión del PR tenga el suyo.
+No repite nada: no sube el video si la tarea ya tiene un adjunto con ese nombre, ni comenta si un
+comentario reciente ya lo nombra. Nombrar el video con el commit (e2e-<repo>-<pr>-<sha7>.mp4) para
+que cada versión del PR tenga el suyo.
 
-Salida: una línea JSON
-  {"ok", "task_id", "task_url", "attachment": {"id", "title", "url"}|null, "skipped": null|"already_attached"}
-Exit: 0 ok · 1 error de API, tarea no encontrada o ambigua · 2 uso.
+Salida: una línea JSON {"ok", "tasks": [{"task_id", "task_url", "attachment", "comment_id",
+  "skipped": [...], "error"}]}; ok es false si alguna tarea falló (las demás se procesan igual).
+Exit: 0 ok · 1 error de API en alguna tarea o credenciales faltantes · 2 uso.
 """
 import argparse
 import json
@@ -30,8 +31,7 @@ import uuid
 
 API = "https://api.clickup.com/api/v2"
 MAX_BYTES = 100 * 1024 * 1024
-MAX_PAGES = 20
-PR_LINK = re.compile(r"https://bitbucket\.org/[\w.-]+/[\w.-]+/pull-requests/\d+")
+MAX_COMMENT = 4000
 FILENAME = re.compile(r"[\w.-]+\.mp4")
 
 
@@ -42,25 +42,9 @@ def request(method, path, key, body=None, content_type=None):
         return json.loads(resp.read().decode("utf-8") or "{}")
 
 
-def task_query(task_id, team):
-    return f"?custom_task_ids=true&team_id={urllib.parse.quote(str(team))}" if "-" in task_id else ""
-
-
-def links_pr(task, pr_url):
-    text = "\n".join(task.get(k) or "" for k in ("markdown_description", "description", "text_content"))
-    return pr_url in {m.group(0) for m in PR_LINK.finditer(text)}
-
-
-def find_review_tasks(list_id, pr_url, key, fetch=request):
-    matches = []
-    for page in range(MAX_PAGES):
-        data = fetch("GET", f"/list/{urllib.parse.quote(list_id, safe='')}/task?include_markdown_description=true"
-                            f"&include_closed=true&subtasks=true&page={page}", key)
-        tasks = data.get("tasks") or []
-        matches += [t for t in tasks if links_pr(t, pr_url)]
-        if data.get("last_page", True) or not tasks:
-            break
-    return matches
+def task_path(task_id, team, suffix=""):
+    query = f"?custom_task_ids=true&team_id={urllib.parse.quote(str(team))}" if "-" in task_id else ""
+    return f"/task/{urllib.parse.quote(task_id, safe='')}{suffix}{query}"
 
 
 def multipart(path):
@@ -71,19 +55,33 @@ def multipart(path):
         return head + f.read() + f"\r\n--{boundary}--\r\n".encode(), f"multipart/form-data; boundary={boundary}"
 
 
-def attach(task_id, path, key, team, fetch=request):
-    """Sube el video salvo que la tarea ya tenga un adjunto con ese nombre."""
-    query = task_query(task_id, team)
-    task = fetch("GET", f"/task/{urllib.parse.quote(task_id, safe='')}{query}", key)
-    result = {"ok": True, "task_id": task.get("id"), "task_url": task.get("url"), "attachment": None, "skipped": None}
-    title = os.path.basename(path)
+def comment_text(explanation, video):
+    return f"{explanation.strip()}\n\nVideo de las pruebas: {os.path.basename(video)}, adjunto en esta tarea."
+
+
+def publish(task_id, video, explanation, key, team, fetch=request):
+    """Sube el video y comenta los casos en una tarea, salvo lo que ya esté."""
+    title = os.path.basename(video)
+    task = fetch("GET", task_path(task_id, team), key)
+    result = {"task_id": task.get("id"), "task_url": task.get("url"), "attachment": None, "comment_id": None,
+              "skipped": []}
     existing = next((a for a in task.get("attachments") or [] if a.get("title") == title), None)
     if existing:
-        return {**result, "attachment": {k: existing.get(k) for k in ("id", "title", "url")},
-                "skipped": "already_attached"}
-    body, content_type = multipart(path)
-    sent = fetch("POST", f"/task/{urllib.parse.quote(task_id, safe='')}/attachment{query}", key, body, content_type)
-    return {**result, "attachment": {k: sent.get(k) for k in ("id", "title", "url")}}
+        result["skipped"].append("attachment")
+    else:
+        body, content_type = multipart(video)
+        existing = fetch("POST", task_path(task_id, team, "/attachment"), key, body, content_type)
+    result["attachment"] = {k: existing.get(k) for k in ("id", "title", "url")}
+
+    comments = fetch("GET", task_path(task_id, team, "/comment"), key).get("comments") or []
+    said = next((c for c in comments if title in (c.get("comment_text") or "")), None)
+    if said:
+        result["skipped"].append("comment")
+    else:
+        payload = json.dumps({"comment_text": comment_text(explanation, video), "notify_all": False}).encode()
+        said = fetch("POST", task_path(task_id, team, "/comment"), key, payload, "application/json")
+    result["comment_id"] = said.get("id")
+    return result
 
 
 def check_video(path):
@@ -103,43 +101,36 @@ def check_video(path):
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("video")
-    target = ap.add_mutually_exclusive_group(required=True)
-    target.add_argument("--task", help="id interno o custom id de la tarea de revisión")
-    target.add_argument("--pr-url", help="URL del PR, para buscar su tarea de revisión con --list")
-    ap.add_argument("--list", help="lista de ClickUp donde están las tareas de revisión")
+    ap.add_argument("--task", action="append", required=True, help="tarea que enlaza la descripción del PR")
+    ap.add_argument("--comment-file", required=True, help="explicación de los casos probados")
     args = ap.parse_args(argv[1:])
 
-    pr = PR_LINK.match(args.pr_url or "")
-    if args.pr_url and (not pr or not args.list):
-        print("ERROR: --pr-url necesita la URL de un PR de Bitbucket y --list", file=sys.stderr)
-        return 2
     problem = check_video(args.video)
+    explanation = open(args.comment_file, encoding="utf-8").read() if os.path.isfile(args.comment_file) else ""
+    if not problem and not explanation.strip():
+        problem = f"{args.comment_file} no existe o está vacío"
+    if not problem and len(explanation) > MAX_COMMENT:
+        problem = f"la explicación pasa de {MAX_COMMENT} caracteres: resumir los casos"
     if problem:
         print(f"ERROR: {problem}", file=sys.stderr)
         return 2
     key, team = os.environ.get("CLICKUP_API_KEY"), os.environ.get("CLICKUP_WORKSPACE_ID")
-    task_id = (args.task or "").lstrip("#")
-    if not key or ("-" in task_id and not team):
+    task_ids = list(dict.fromkeys(t.lstrip("#") for t in args.task))
+    if not key or (any("-" in t for t in task_ids) and not team):
         print("ERROR: CLICKUP_API_KEY / CLICKUP_WORKSPACE_ID no configurados", file=sys.stderr)
         return 1
 
-    try:
-        if not task_id:
-            tasks = find_review_tasks(args.list, pr.group(0), key)
-            if len(tasks) != 1:
-                print(f"ERROR: {len(tasks)} tareas de la lista {args.list} enlazan {pr.group(0)}; "
-                      "se adjunta solo con una", file=sys.stderr)
-                return 1
-            task_id = tasks[0]["id"]
-        result = attach(task_id, args.video, key, team)
-    except urllib.error.HTTPError as e:
-        print(f"ERROR: ClickUp HTTP {e.code} al adjuntar a {task_id or args.list}", file=sys.stderr)
-        return 1
-    except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as e:
-        print(f"ERROR: ClickUp: {e}", file=sys.stderr)
-        return 1
-    print(json.dumps(result, ensure_ascii=False))
-    return 0
+    results = []
+    for task_id in task_ids:
+        try:
+            results.append(publish(task_id, args.video, explanation, key, team))
+        except urllib.error.HTTPError as e:
+            results.append({"task_id": task_id, "error": f"ClickUp HTTP {e.code}"})
+        except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as e:
+            results.append({"task_id": task_id, "error": f"ClickUp: {e}"})
+    ok = not any("error" in r for r in results)
+    print(json.dumps({"ok": ok, "tasks": results}, ensure_ascii=False))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
