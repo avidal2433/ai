@@ -41,6 +41,21 @@ Ejecutar cada escenario y registrar en `<outdir>/e2e/` su resultado y su evidenc
 - **Falla también en destino.** Es preexistente: no se atribuye al PR y se informa en el cierre. Si impide ejecutar un escenario del cambio, ese escenario queda sin ejecutar.
 - **Falla por el entorno** (un servicio caído, un dato que falta). Corregir el entorno y repetir; no se reporta como defecto.
 
+## Video de evidencia
+
+Toda corrida end-to-end deja un MP4 con el recorrido de cada escenario, que se adjunta a la tarea de revisión (sección 5 de la skill).
+
+- **Escenarios con navegador.** Grabarlos con la grabación de video del navegador (en Playwright, `recordVideo` a 1280x720), un archivo por escenario.
+- **Escenarios sin interfaz** (HTTP, comandos, migraciones). Mostrarlos en una página HTML con la petición o el comando, la salida relevante y la comprobación en la base, y capturarla como imagen.
+- **Tarjetas.** Antes de cada escenario va una tarjeta con su nombre, la entrada y el resultado esperado; después, otra con el resultado obtenido. El video abre con una portada (PR, commit revisado, rama destino y fecha) y cierra con el resumen de todos los escenarios y de la suite. Las tarjetas son páginas HTML capturadas como imagen.
+- **Datos en pantalla.** No puede aparecer nada sensible: contraseñas, tokens, el contenido del `.env` ni datos personales reales. Los escenarios usan los datos de prueba de la revisión.
+
+Armar el MP4 en el orden del recorrido. Con `:segundos`, una imagen queda ese tiempo en pantalla; el nombre lleva el commit para que el video de cada versión del PR sea distinto:
+
+```bash
+python3 <skill>/scripts/e2e_video.py <outdir>/e2e/e2e-<repo_slug>-<pr_id>-<sha7>.mp4 portada.png:4 escenario-1.png:3 escenario-1.webm resultado-1.png:2 resumen.png:6
+```
+
 ## Sin escenarios completos no se aprueba
 
 Para aprobar, todos los escenarios del cambio y de regresión tienen que haberse ejecutado y pasado en el commit revisado, con la suite en verde. Si quedó alguno sin ejecutar, no se aprueba: el comentario global `(AI)` de la sección 5 de la skill nombra cada escenario pendiente, explica por qué no se pudo ejecutar y qué haría falta.

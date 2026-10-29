@@ -15,6 +15,9 @@ metadata:
       - CLICKUP_WORKSPACE_ID  # solo para custom IDs de ClickUp (p. ej. TF-1234)
       - BITBUCKET_WORKSPACE  # valor por defecto cuando el PR no llega como URL completa
       - BITBUCKET_ACCOUNT_ID  # cuenta revisora, si el token no puede leer GET /user; la usan la re-revisión, resolve y approve
+      - CLICKUP_REVIEW_LIST_ID  # lista de las tareas de revisión, para adjuntar el video end-to-end (scripts/clickup_attach.py)
+    bins:
+      - ffmpeg  # y ffprobe: arman y validan el video de las pruebas end-to-end (scripts/e2e_video.py)
   bins:
     - git
     - curl
@@ -131,6 +134,14 @@ python3 <skill>/scripts/bitbucket_comments.py reply <workspace> <repo_slug> <pr_
 
 `resolve` y `reopen` solo actúan sobre comentarios raíz `(AI)` de la cuenta revisora; devuelven `skipped` para los demás.
 
+**Evidencia end-to-end.** Con la misma autorización de publicar, si se ejecutaron pruebas end-to-end (pasaran o no), adjuntar su video a la tarea de revisión antes de fijar el estado del PR. La tarea de revisión es la tarea de ClickUp cuya descripción enlaza el PR, no la del requerimiento que el PR enlaza en la suya. Usar `--task` si quien invoca la skill la indica; si no, buscarla con `--pr-url` en la lista `CLICKUP_REVIEW_LIST_ID`. Es la única escritura en ClickUp.
+
+```bash
+python3 <skill>/scripts/clickup_attach.py <video.mp4> (--task <task_id> | --pr-url <url del PR> --list <list_id>)
+```
+
+Si no se identifica una tarea de revisión, no adjuntar y decirlo en el cierre. Si el adjunto falla, reintentarlo una vez. Si vuelve a fallar, no aprobar y reportarlo en el cierre, sin comentario en el PR: el fallo es de la revisión, no del PR.
+
 **Estado de la revisión.** Con la misma autorización de publicar, después de los comentarios, respuestas e hilos resueltos o reabiertos, fijar el estado de la cuenta revisora en el PR. Un defecto queda pendiente si se publicó en esta revisión o si su hilo `(AI)` sigue vigente. Antes de solicitar cambios, cada defecto pendiente tiene que estar visible en un hilo sin resolver: si alguno solo consta en un hilo resuelto, reabrirlo o publicarlo antes, porque la marca `(AI) Cambios solicitados…` remite a esos hallazgos.
 
 - Con al menos un defecto pendiente, solicitar cambios, aunque `reviewer_state` ya sea `changes_requested`: decidir si renovarla le toca al script. Si la solicitud vigente es de la IA y la cuenta publicó comentarios o respuestas `(AI)` después de ella, la retira y la vuelve a pedir, para que la solicitud y su marca queden detrás de los hallazgos nuevos. Sin hallazgos nuevos devuelve `already_requested`. Una solicitud puesta por una persona no se renueva: devuelve `already_requested` con el motivo en `error`. Si la cuenta tiene el PR aprobado, retira antes la aprobación. Publica además un comentario `(AI) Cambios solicitados…` que marca la solicitud como de la revisión; sin él (`marker: null`), la solicitud no se retirará sola. Si esta revisión publicó comentarios y el resultado no trae `marker`, reportarlo en el cierre.
@@ -138,7 +149,7 @@ python3 <skill>/scripts/bitbucket_comments.py reply <workspace> <repo_slug> <pr_
   - esta revisión no publicó comentarios ni respuestas, y ningún hilo `(AI)` sigue vigente;
   - la cobertura fue completa: se leyó el código de la versión revisada, no quedó ningún archivo omitido sin justificar ni candidato no verificable;
   - ningún check de CI falló ni sigue en curso, y lo que el CI no valida (por ejemplo, un frontend sin compilar) quedó comprobado;
-  - las pruebas end-to-end (sección 4) se ejecutaron en el commit revisado: pasaron todos los escenarios del cambio y de regresión, y la suite quedó en verde;
+  - las pruebas end-to-end (sección 4) se ejecutaron en el commit revisado: pasaron todos los escenarios del cambio y de regresión, la suite quedó en verde y su video quedó adjunto a la tarea de revisión, si se identificó una;
   - integrarlo no exige nada fuera del PR: despliegue coordinado con otro servicio, migración o cambio de datos en otro repositorio, variable de entorno o configuración nueva, dependencia fijada a una rama u operación manual.
 
   Basta una condición incumplida para no aprobar; nombrarla en el cierre. `--commit` recibe el SHA completo del commit revisado (`git -C <repository_path> rev-parse <source.commit.hash>`), porque el PR solo expone 12 caracteres. El script no aprueba si la cabeza de la rama origen no es ese commit, si el PR está cerrado o en borrador, si es de la cuenta revisora o si tiene checks fallidos o en curso; si la rama avanza mientras aprueba, retira la aprobación. Si la cuenta tenía una solicitud de cambios de la IA, la retira antes de aprobar. No publica comentario: la aprobación del PR es la confirmación, y el resultado trae `marker: null`.
@@ -152,4 +163,4 @@ python3 <skill>/scripts/bitbucket_comments.py approve <workspace> <repo_slug> <p
 
 Si la API falla, los comentarios publicados siguen siendo válidos: reportar el error en el cierre sin reintentar el lote.
 
-Responder brevemente con enlace del PR, cobertura, versión del código revisada, contexto ClickUp/historia utilizado u omitido, CI, pruebas end-to-end (escenarios ejecutados con su resultado y los que quedaron sin ejecutar, con motivo), hallazgos confirmados, comentarios publicados (inline/global), hilos resueltos y reabiertos, y estado de la revisión (cambios solicitados, aprobado o el motivo para no aprobar). Explicar limitaciones y candidatos pendientes con motivo. Si no hay hallazgos publicables, decirlo sin inventar comentarios para justificar el trabajo. No volcar el análisis completo salvo que se solicite.
+Responder brevemente con enlace del PR, cobertura, versión del código revisada, contexto ClickUp/historia utilizado u omitido, CI, pruebas end-to-end (escenarios ejecutados con su resultado, los que quedaron sin ejecutar con su motivo y el enlace del video adjunto), hallazgos confirmados, comentarios publicados (inline/global), hilos resueltos y reabiertos, y estado de la revisión (cambios solicitados, aprobado o el motivo para no aprobar). Explicar limitaciones y candidatos pendientes con motivo. Si no hay hallazgos publicables, decirlo sin inventar comentarios para justificar el trabajo. No volcar el análisis completo salvo que se solicite.

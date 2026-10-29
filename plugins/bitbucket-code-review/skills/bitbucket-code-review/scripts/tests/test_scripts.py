@@ -6,6 +6,7 @@ Tests sin red para los scripts de la skill.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,7 +18,9 @@ SCRIPTS = os.path.dirname(HERE)
 sys.path.insert(0, SCRIPTS)
 
 import bitbucket_comments as bc  # noqa: E402
+import clickup_attach  # noqa: E402
 import diff_line_map  # noqa: E402
+import e2e_video  # noqa: E402
 import semantic_release_check as src  # noqa: E402
 
 
@@ -577,6 +580,104 @@ class PublishCliTests(unittest.TestCase):
         lines = [json.loads(ln) for ln in out.stdout.splitlines()]
         self.assertEqual([ln["mode"] for ln in lines[:4]], ["inline", "inline", "global_fallback", "global"])
         self.assertEqual(lines[4], {"summary": {"inline": 2, "global": 1, "fallback": 1, "failed": 0}})
+
+
+class E2eVideoTests(unittest.TestCase):
+    def test_images_take_their_seconds_and_videos_their_own_length(self):
+        self.assertEqual(e2e_video.parse_clip("/tmp/x/tarjeta.png:2.5"), ("/tmp/x/tarjeta.png", 2.5))
+        self.assertEqual(e2e_video.parse_clip("captura.png"), ("captura.png", e2e_video.IMAGE_SECONDS))
+        self.assertEqual(e2e_video.parse_clip("/tmp/x/login.webm"), ("/tmp/x/login.webm", None))
+        for bad in ("login.webm:3", "notas.txt", "tarjeta.png:dos"):
+            with self.assertRaises(ValueError):
+                e2e_video.parse_clip(bad)
+
+    def test_every_clip_is_normalized_before_the_concat(self):
+        cmd = e2e_video.build_command("out.mp4", [("a.png", 3.0), ("b.webm", None)])
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        self.assertEqual(cmd[cmd.index("a.png") - 5:cmd.index("a.png")], ["-loop", "1", "-t", "3", "-i"])
+        self.assertIn("[1:v]scale=1280:720", graph)
+        self.assertTrue(graph.endswith("[v0][v1]concat=n=2:v=1:a=0[out]"))
+        self.assertEqual(cmd[-1], "out.mp4")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "sin ffmpeg")
+    def test_builds_a_playable_h264_mp4(self):
+        with tempfile.TemporaryDirectory() as d:
+            card, clip, out = (os.path.join(d, n) for n in ("card.png", "clip.webm", "e2e-panel-1-abc1234.mp4"))
+            subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=white:s=640x360",
+                            "-frames:v", "1", card], check=True)
+            subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=s=800x600:d=1",
+                            "-c:v", "libvpx", clip], check=True)
+            out_json = subprocess.run([sys.executable, os.path.join(SCRIPTS, "e2e_video.py"), out, f"{card}:1",
+                                       clip], capture_output=True, text=True)
+            self.assertEqual(out_json.returncode, 0, out_json.stderr)
+            self.assertEqual(e2e_video.probe(out)[0], "h264")
+            self.assertAlmostEqual(json.loads(out_json.stdout)["seconds"], 2, delta=0.2)
+            self.assertIsNone(clickup_attach.check_video(out))
+
+
+class ClickupAttachTests(unittest.TestCase):
+    PR = "https://bitbucket.org/placetopay/panel/pull-requests/4391"
+
+    def review_task(self, tid, pr=PR):
+        return {"id": tid, "markdown_description": f"**PR:** [{pr}]({pr})"}
+
+    def test_matches_the_exact_pull_request_link(self):
+        self.assertTrue(clickup_attach.links_pr(self.review_task("a"), self.PR))
+        self.assertTrue(clickup_attach.links_pr(self.review_task("a", self.PR + "/overview"), self.PR))
+        self.assertFalse(clickup_attach.links_pr(self.review_task("a", self.PR + "1"), self.PR))
+        self.assertFalse(clickup_attach.links_pr(self.review_task("a", self.PR[:-1]), self.PR))
+
+    def test_finds_the_review_task_across_pages(self):
+        pages = [{"tasks": [self.review_task("x", self.PR[:-1])], "last_page": False},
+                 {"tasks": [self.review_task("t1")], "last_page": True}]
+        calls = []
+
+        def fetch(method, path, key, *rest):
+            calls.append(path)
+            return pages[len(calls) - 1]
+        self.assertEqual([t["id"] for t in clickup_attach.find_review_tasks("901", self.PR, "k", fetch)], ["t1"])
+        self.assertTrue(calls[1].endswith("page=1"))
+
+    def video(self, d, name="e2e-panel-4391-7c33771.mp4"):
+        path = os.path.join(d, name)
+        with open(path, "wb") as f:
+            f.write(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64)
+        return path
+
+    def test_uploads_the_video_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, sent = self.video(d), []
+
+            def fetch(method, url, key, body=None, content_type=None):
+                if method == "GET":
+                    return {"id": "t1", "url": "https://app.clickup.com/t/t1", "attachments": []}
+                sent.append((url, body, content_type))
+                return {"id": "a1", "title": os.path.basename(path), "url": "https://files/a1"}
+            result = clickup_attach.attach("t1", path, "k", None, fetch)
+        self.assertEqual((result["attachment"]["id"], result["skipped"]), ("a1", None))
+        url, body, content_type = sent[0]
+        self.assertEqual(url, "/task/t1/attachment")
+        self.assertTrue(content_type.startswith("multipart/form-data; boundary="))
+        self.assertIn(b'name="attachment"; filename="e2e-panel-4391-7c33771.mp4"', body)
+
+    def test_an_already_attached_video_is_not_uploaded_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self.video(d)
+
+            def fetch(method, url, key, body=None, content_type=None):
+                self.assertEqual((method, url), ("GET", "/task/TF-1?custom_task_ids=true&team_id=9"))
+                return {"id": "t1", "attachments": [{"id": "a0", "title": os.path.basename(path), "url": "u"}]}
+            result = clickup_attach.attach("TF-1", path, "k", "9", fetch)
+        self.assertEqual((result["attachment"]["id"], result["skipped"]), ("a0", "already_attached"))
+
+    def test_only_named_mp4_files_are_attached(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(clickup_attach.check_video(self.video(d)))
+            self.assertIn("nombre", clickup_attach.check_video(os.path.join(d, "mi video.mp4")))
+            fake = os.path.join(d, "e2e.mp4")
+            with open(fake, "wb") as f:
+                f.write(b"<html>no es video</html>")
+            self.assertIn("no es un MP4", clickup_attach.check_video(fake))
 
 
 if __name__ == "__main__":
