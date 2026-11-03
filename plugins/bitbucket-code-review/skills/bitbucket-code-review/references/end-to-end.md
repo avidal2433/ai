@@ -6,7 +6,7 @@ Antes de aprobar, el PR se ejecuta de punta a punta en el commit revisado: por l
 
 Definirlos antes de preparar nada y escribirlos en `<outdir>/e2e/escenarios.md`: escenario, entrada y resultado esperado.
 
-1. **Cambio.** Cada comportamiento que el PR agrega o modifica y cada criterio explícito de la tarea, con su camino feliz y los estados límite que el PR toca: validaciones, permisos y errores.
+1. **Cambio.** Cada comportamiento que el PR agrega o modifica y cada criterio explícito de la tarea que entrega este repositorio, con su camino feliz y los estados límite que el PR toca: validaciones, permisos y errores.
 2. **Regresión.** Los flujos vecinos que pasan por el código cambiado: quién llama a lo modificado y qué pantallas, comandos o integraciones lo usan. Si el repo es un servicio o una librería que otras aplicaciones consumen (autenticación, API, SDK, paquete), incluir el flujo principal de cada consumidor afectado, levantado desde su rama principal. Los consumidores se identifican en la configuración y las dependencias de los clones locales.
 3. **Suite.** La suite automatizada del repo en el commit revisado. Vale la del CI si sus pasos de tests corrieron de verdad en ese commit (`check_runs` y los reportes de tests del pipeline). Si no corrieron, ejecutarla en el checkout aislado. En repos grandes basta con los directorios de los dominios tocados y de sus consumidores.
 
