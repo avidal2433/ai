@@ -61,14 +61,24 @@ python3 <skill>/scripts/e2e_video.py <outdir>/e2e/e2e-<repo_slug>-<pr_id>-<sha7>
 El video va acompañado de un comentario en la tarea, escrito para el cliente. El cliente conoce el requerimiento, pero no el código. Guardarlo en `<outdir>/e2e/comentario.md` con esta forma:
 
 ```text
-Pruebas end-to-end del PR <url del PR> sobre la versión <sha7>: <todos los casos pasaron | N de M casos pasaron | quedaron casos sin probar>.
+Pruebas end-to-end del PR <url del PR> sobre la versión <sha7>: <todos los casos pasaron | N de M casos pasaron · K fallaron | quedaron casos sin probar>.
 
-Casos probados:
-- <qué se hizo y qué se comprobó, en lenguaje del requerimiento>: <pasó | falló | no se pudo probar, y por qué>.
+Casos del requerimiento:
+- [pasó] <caso>: <qué se hizo y qué se comprobó, en lenguaje del requerimiento>.
+- [falló] <caso>: <qué pasó y qué pedía el requerimiento>.
+- [sin probar] <caso>: <por qué no se pudo probar>.
+
+Flujos existentes (regresión):
+- [pasó] <flujo>: <qué se comprobó>.
+
+Pendiente: <qué no se evidenció y qué sigue>.
 ```
 
-- **Una línea por caso**, en el orden del video, y como máximo unas 12. Los casos parecidos se agrupan.
+El script lo publica con formato: un ícono por estado (✅ pasó, ❌ falló, ⚠️ sin probar), el nombre del caso en negrita y el resultado general con el ícono del peor caso.
+
+- **Una línea por caso**, con su estado entre corchetes y un nombre corto antes de los dos puntos, en el orden del video y como máximo unas 12. Los casos parecidos se agrupan. El script rechaza una línea de caso sin estado válido.
 - **Primero los casos del requerimiento**, nombrando sus criterios cuando la tarea los numera (CA-1, RN-02). Después, los flujos existentes que se comprobaron para descartar regresiones.
+- **«Pendiente» solo si algún caso falló o quedó sin probar:** qué no se evidenció, en palabras del requerimiento, y qué sigue (por ejemplo, que se solicitaron cambios en el PR).
 - **Sin detalles internos:** nada de clases, endpoints, puertos, nombres de bases, dobles de prueba ni comandos. Tampoco datos sensibles.
 - **Sin repetir el nombre del video:** el script agrega la línea que lo nombra.
 

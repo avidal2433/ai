@@ -638,11 +638,21 @@ class ClickupAttachTests(unittest.TestCase):
             return {"id": "c1"}
         return fetch, calls
 
+    EXPLANATION = (
+        "Pruebas end-to-end del PR https://bitbucket.org/placetopay/panel/pull-requests/4366 sobre la versión "
+        "4f5e30b: 1 de 2 casos pasaron · 1 falló.\n\n"
+        "Casos del requerimiento:\n"
+        "- [pasó] Login con 2FA: pide el código y entra con uno válido.\n"
+        "- [falló] Código vencido: entró con un código vencido.\n\n"
+        "Pendiente: rechazar los códigos vencidos; se solicitaron cambios en el PR.\n")
+
+    def blocks(self, explanation=EXPLANATION):
+        return clickup_attach.comment_blocks(explanation, self.NAME)
+
     def test_attaches_the_video_and_explains_the_cases_once(self):
         fetch, calls = self.clickup()
         with tempfile.TemporaryDirectory() as d:
-            result = clickup_attach.publish("TF-2980", self.video(d), "Casos probados:\n- Login con 2FA: pasa.",
-                                            "k", "9", 7, fetch)
+            result = clickup_attach.publish("TF-2980", self.video(d), self.EXPLANATION, "k", "9", 7, fetch)
         self.assertEqual((result["attachment"]["id"], result["comment_id"], result["skipped"]), ("a1", "c1", []))
         posts = [c for c in calls if c[0] == "POST"]
         self.assertEqual([c[1] for c in posts], ["/task/TF-2980/attachment?custom_task_ids=true&team_id=9",
@@ -650,8 +660,43 @@ class ClickupAttachTests(unittest.TestCase):
         self.assertIn(b'name="attachment"; filename="e2e-panel-4366-4f5e30b.mp4"', posts[0][2])
         comment = json.loads(posts[1][2])
         self.assertFalse(comment["notify_all"])
-        self.assertTrue(comment["comment_text"].startswith("Casos probados:"))
-        self.assertTrue(comment["comment_text"].endswith(f"{self.NAME}, adjunto en esta tarea."))
+        self.assertNotIn("comment_text", comment)
+        self.assertEqual(comment["comment"], self.blocks())
+
+    def test_the_comment_shows_each_case_with_its_status(self):
+        blocks = self.blocks()
+        self.assertEqual(blocks[:3], [{"text": "🧪 Pruebas end-to-end", "attributes": {"bold": True}},
+                                      {"text": "\nPR: "},
+                                      {"text": "panel#4366", "attributes": {
+                                          "link": "https://bitbucket.org/placetopay/panel/pull-requests/4366"}}])
+        self.assertIn({"text": "4f5e30b", "attributes": {"code": True}}, blocks)
+        self.assertIn({"text": "❌ 1 de 2 casos pasaron · 1 falló", "attributes": {"bold": True}}, blocks)
+        self.assertIn({"text": "Casos del requerimiento", "attributes": {"bold": True}}, blocks)
+        failed = blocks.index({"text": "❌ "})
+        self.assertEqual(blocks[failed + 1:failed + 4], [{"text": "Código vencido", "attributes": {"bold": True}},
+                                                         {"text": ": entró con un código vencido."},
+                                                         {"text": "\n", "attributes": {"list": {"list": "bullet"}}}])
+        self.assertIn({"text": "✅ "}, blocks)
+        self.assertIn({"text": "⚠️ Pendiente:", "attributes": {"bold": True}}, blocks)
+        text = "".join(b["text"] for b in blocks)
+        self.assertIn(clickup_attach.video_line(self.NAME), text.splitlines())
+
+    def test_the_verdict_follows_the_worst_case(self):
+        header = "Pruebas end-to-end del PR https://bitbucket.org/w/r/pull-requests/1 sobre la versión abc1234: x.\n"
+        for cases, icon in (("- [pasó] A: ok.\n", "✅"), ("- [pasó] A: ok.\n- [sin probar] B: sin datos.\n", "⚠️"),
+                            ("- [sin probar] B: sin datos.\n- [falló] C: error.\n", "❌")):
+            self.assertIn({"text": f"{icon} x", "attributes": {"bold": True}}, self.blocks(header + cases))
+
+    def test_rejects_a_case_without_a_valid_status(self):
+        self.assertIsNone(clickup_attach.format_problem(self.EXPLANATION))
+        self.assertIn("Login con 2FA: pasó.", clickup_attach.format_problem("- Login con 2FA: pasó."))
+        self.assertIsNotNone(clickup_attach.format_problem("- [ok] Login: entra."))
+        with tempfile.TemporaryDirectory() as d:
+            notes = os.path.join(d, "casos.md")
+            with open(notes, "w") as f:
+                f.write("Casos del requerimiento:\n- Login con 2FA: pasó.")
+            with mock.patch("sys.stderr", new_callable=__import__("io").StringIO):
+                self.assertEqual(clickup_attach.main(["x", self.video(d), "--task", "TF-1", "--comment-file", notes]), 2)
 
     def test_nothing_is_repeated_on_a_second_run(self):
         line = clickup_attach.video_line(self.NAME)
