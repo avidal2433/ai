@@ -8,7 +8,9 @@ Uso:
 
   <task_id> es cada tarea que enlaza la descripción del PR (review_context.json.tasks): las del
   requerimiento, que se comparten con el cliente. Custom id (TEAM-123, con o sin "#") o id interno.
-  El comentario es el texto de --comment-file; el script le agrega una línea con el nombre del video.
+  El comentario es el texto de --comment-file en el formato de references/end-to-end.md; el script lo
+  publica con formato de ClickUp (cada caso con el ícono de su estado y el nombre en negrita) y le agrega
+  una línea con el nombre del video. Una línea de caso sin estado válido es un error de uso.
   Requiere CLICKUP_API_KEY con permiso de escritura; CLICKUP_WORKSPACE_ID solo para custom IDs.
 
 No repite nada: no sube el video si la cuenta ya adjuntó uno con ese nombre a la tarea, ni comenta si
@@ -35,6 +37,10 @@ MAX_BYTES = 100 * 1024 * 1024
 MAX_COMMENT = 4000
 MAX_TASKS = 3
 FILENAME = re.compile(r"[\w.-]+\.mp4")
+ICONS = {"pasó": "✅", "falló": "❌", "sin probar": "⚠️"}
+HEADER = re.compile(r"Pruebas end-to-end del PR (\S+) sobre la versión (\S+): (.+?)\.?")
+CASE = re.compile(rf"- \[({'|'.join(ICONS)})\] ([^:]+): (.+)")
+PR_URL = re.compile(r"https://bitbucket\.org/[^/]+/([^/]+)/pull-requests/(\d+)")
 
 
 def request(method, path, key, body=None, content_type=None):
@@ -61,8 +67,55 @@ def video_line(video):
     return f"Video de las pruebas: {os.path.basename(video)}, adjunto en esta tarea."
 
 
-def comment_text(explanation, video):
-    return f"{explanation.strip()}\n\n{video_line(video)}"
+def format_problem(explanation):
+    """Primera línea de caso sin estado válido, o None."""
+    for line in explanation.splitlines():
+        line = line.strip()
+        if line.startswith("- ") and not CASE.fullmatch(line):
+            return f"caso sin estado [{' | '.join(ICONS)}]: {line[:80]}"
+    return None
+
+
+def comment_blocks(explanation, video):
+    """El comentario en el formato enriquecido de ClickUp, con la línea del video al final."""
+    lines = [line.strip() for line in explanation.strip().splitlines()]
+    statuses = {m.group(1) for m in map(CASE.fullmatch, lines) if m}
+    verdict = "❌" if "falló" in statuses else "⚠️" if "sin probar" in statuses else "✅"
+    blocks = []
+
+    def add(text, **attributes):
+        blocks.append({"text": text, "attributes": attributes} if attributes else {"text": text})
+
+    for line in lines:
+        if header := HEADER.fullmatch(line):
+            url, version, summary = header.groups()
+            pr = PR_URL.fullmatch(url)
+            add("🧪 Pruebas end-to-end", bold=True)
+            add("\nPR: ")
+            add(f"{pr.group(1)}#{pr.group(2)}" if pr else url, link=url)
+            add("\nVersión probada: ")
+            add(version, code=True)
+            add("\nResultado: ")
+            add(f"{verdict} {summary}", bold=True)
+            add("\n")
+        elif case := CASE.fullmatch(line):
+            status, name, detail = case.groups()
+            add(f"{ICONS[status]} ")
+            add(name, bold=True)
+            add(f": {detail}")
+            add("\n", list={"list": "bullet"})
+        elif line.startswith("Pendiente:"):
+            add("⚠️ Pendiente:", bold=True)
+            add(f"{line[len('Pendiente:'):]}\n")
+        elif line.endswith(":"):
+            add(line[:-1], bold=True)
+            add("\n")
+        else:
+            add(f"{line}\n")
+    add("\n")
+    add(video_line(video), italic=True)
+    add("\n")
+    return blocks
 
 
 def by(item, me):
@@ -94,7 +147,7 @@ def publish(task_id, video, explanation, key, team, me, fetch=request):
     if said:
         result["skipped"].append("comment")
     else:
-        payload = json.dumps({"comment_text": comment_text(explanation, video), "notify_all": False}).encode()
+        payload = json.dumps({"comment": comment_blocks(explanation, video), "notify_all": False}).encode()
         said = fetch("POST", task_path(task_id, team, "/comment"), key, payload, "application/json")
     result["comment_id"] = said.get("id")
     return result
@@ -127,6 +180,8 @@ def main(argv):
         problem = f"{args.comment_file} no existe o está vacío"
     if not problem and len(explanation) > MAX_COMMENT:
         problem = f"la explicación pasa de {MAX_COMMENT} caracteres: resumir los casos"
+    if not problem:
+        problem = format_problem(explanation)
     if problem:
         print(f"ERROR: {problem}", file=sys.stderr)
         return 2
