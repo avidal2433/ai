@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+import urllib.error
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import clickup_task
@@ -49,6 +50,34 @@ class ContextTests(unittest.TestCase):
              contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(clickup_task.main(['script', 'TEAM-1']), 1)
             fetch.assert_not_called()
+
+    def run_tasks(self, ids, tasks):
+        def fetch(task_id, team, key, by_custom_id):
+            if task_id not in tasks:
+                raise urllib.error.HTTPError(task_id, 401, 'Unauthorized', {}, None)
+            return tasks[task_id]
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, {'CLICKUP_API_KEY': 'test', 'CLICKUP_WORKSPACE_ID': '1'}, clear=True), \
+             mock.patch.object(clickup_task, 'fetch_task', side_effect=fetch), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = clickup_task.main(['script', *ids])
+        return code, [json.loads(line) for line in out.getvalue().splitlines()], err.getvalue()
+
+    def test_a_failing_link_does_not_hide_the_task_id_it_shows(self):
+        code, lines, err = self.run_tasks(['AWSDKTF-3163', 'TF-3163'], {'TF-3163': {'id': 'abc'}})
+        self.assertEqual(code, 0)
+        self.assertEqual([(l['ids'], l['task']['id']) for l in lines], [(['TF-3163'], 'abc')])
+        self.assertIn('HTTP 401 al consultar AWSDKTF-3163', err)
+
+    def test_ids_of_the_same_task_are_merged(self):
+        code, lines, _ = self.run_tasks(['abc', 'TF-1'], {'abc': {'id': 'abc'}, 'TF-1': {'id': 'abc'}})
+        self.assertEqual(code, 0)
+        self.assertEqual([l['ids'] for l in lines], [['abc', 'TF-1']])
+
+    def test_fails_only_when_no_id_resolves(self):
+        code, lines, err = self.run_tasks(['AWSDKTF-3163'], {})
+        self.assertEqual((code, lines), (1, []))
+        self.assertIn('ningún ID resolvió', err)
 
     def test_diff_content_cannot_replace_file_headers(self):
         diff = 'diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n--- value\n+++ value\n unchanged\n'
