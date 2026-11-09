@@ -35,7 +35,7 @@ Validar el resultado en lo que ve el usuario y en el efecto real (filas en la ba
 
 ## Ejecución y evidencia
 
-Ejecutar cada escenario y registrar en `<outdir>/e2e/` su resultado y su evidencia: URL final, respuesta, captura, consulta a la base o salida del comando. Si un escenario falla, repetirlo sobre la rama destino con el mismo entorno:
+Ejecutar cada escenario y registrar en `<outdir>/e2e/` su resultado y su evidencia: URL final, respuesta, captura, consulta a la base o salida del comando. La corrida recorre todos los escenarios: uno que falla se registra y se sigue con el siguiente; solo queda sin ejecutar el que dependa de él, con ese motivo. Así todos los fallos salen en la misma ronda. Si un escenario falla, repetirlo sobre la rama destino con el mismo entorno:
 
 - **Falla solo en el PR.** Es un candidato (sección 4 de la skill) y la corrida es la evidencia del caso de fallo.
 - **Falla también en destino.** Es preexistente: no se atribuye al PR y se informa en el cierre. Si impide ejecutar un escenario del cambio, ese escenario queda sin ejecutar.

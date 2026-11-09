@@ -11,7 +11,8 @@ o resueltos por otra persona después de la revisión previa, sin los comentario
 solicitud de cambios y de la aprobación (MARKS); path_touched_after indica si un commit propio del PR tocó el
 archivo del hilo después de publicarlo (null en hilos globales). Es una pista para decidir
 qué verificar, no un veredicto: la corrección puede estar en otro archivo.
-Sin previous_review imprime {"previous_review": null} y la re-revisión cubre el PR completo.
+Sin previous_review imprime {"previous_review": null}: no hay delta ni hilos que cerrar.
+El delta no acota el análisis: cada ronda revisa el PR completo (SKILL.md, sección 1).
 """
 import json
 import subprocess
